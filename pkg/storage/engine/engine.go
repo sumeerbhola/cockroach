@@ -515,6 +515,7 @@ type Stats struct {
 	TableReadersMemEstimate        int64
 	PendingCompactionBytesEstimate int64
 	L0FileCount                    int64
+	L0Bytes                        int64
 }
 
 // EnvStats is a set of RocksDB env stats, including encryption status.
@@ -705,6 +706,12 @@ var ingestDelayL0Threshold = settings.RegisterIntSetting(
 	20,
 )
 
+var ingestDelayL0BytesThreshold = settings.RegisterIntSetting(
+	"rocksdb.ingest_backpressure.l0_file_bytes_threshold",
+	"level0 bytes after which to backpressure SST ingestions",
+	512<<20, /* 512MiB */
+)
+
 var ingestDelayPendingLimit = settings.RegisterByteSizeSetting(
 	"rocksdb.ingest_backpressure.pending_compaction_threshold",
 	"pending compaction estimate above which to backpressure SST ingestions",
@@ -740,7 +747,7 @@ func preIngestDelay(ctx context.Context, eng Engine, settings *cluster.Settings)
 	if targetDelay == 0 {
 		return
 	}
-	log.VEventf(ctx, 2, "delaying SST ingestion %s. %d L0 files, %db pending compaction", targetDelay, stats.L0FileCount, stats.PendingCompactionBytesEstimate)
+	log.VEventf(ctx, 2, "delaying SST ingestion %s. %d L0 files, %db pending compaction, %db L0 bytes", targetDelay, stats.L0FileCount, stats.PendingCompactionBytesEstimate, stats.L0Bytes)
 
 	select {
 	case <-time.After(targetDelay):
@@ -752,8 +759,12 @@ func calculatePreIngestDelay(settings *cluster.Settings, stats *Stats) time.Dura
 	maxDelay := ingestDelayTime.Get(&settings.SV)
 	l0Filelimit := ingestDelayL0Threshold.Get(&settings.SV)
 	compactionLimit := ingestDelayPendingLimit.Get(&settings.SV)
+	l0BytesLimit := ingestDelayL0BytesThreshold.Get(&settings.SV)
 
 	if stats.PendingCompactionBytesEstimate >= compactionLimit {
+		return maxDelay
+	}
+	if stats.L0Bytes >= l0BytesLimit {
 		return maxDelay
 	}
 	const ramp = 10

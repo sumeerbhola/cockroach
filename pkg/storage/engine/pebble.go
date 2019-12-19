@@ -644,6 +644,7 @@ func (p *Pebble) GetStats() (*Stats, error) {
 		TableReadersMemEstimate:        m.TableCache.Size,
 		PendingCompactionBytesEstimate: int64(m.Compact.EstimatedDebt),
 		L0FileCount:                    m.Levels[0].NumFiles,
+		L0Bytes:                        int64(m.Levels[0].Size),
 	}, nil
 }
 
