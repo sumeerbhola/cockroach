@@ -86,7 +86,9 @@ func (c *Constraint) UnionWith(evalCtx *tree.EvalContext, other *Constraint) {
 	if c.IsUnconstrained() || other.IsContradiction() {
 		return
 	}
-
+	if c.Spans.Count() == 0 && other.Spans.Count() == 0 {
+		return
+	}
 	// Use variation on merge sort, because both sets of spans are ordered and
 	// non-overlapping.
 
@@ -98,64 +100,64 @@ func (c *Constraint) UnionWith(evalCtx *tree.EvalContext, other *Constraint) {
 	var result Spans
 	result.Alloc(left.Count() + right.Count())
 
-	for leftIndex < left.Count() || rightIndex < right.Count() {
-		if rightIndex < right.Count() {
-			if leftIndex >= left.Count() ||
-				left.Get(leftIndex).Compare(&keyCtx, right.Get(rightIndex)) > 0 {
-				// Swap the two sets, so that going forward the current left
-				// span starts before the current right span.
-				left, right = right, left
-				leftIndex, rightIndex = rightIndex, leftIndex
-			}
-		}
-
-		// Merge this span with any overlapping spans in left or right. Initially,
-		// it can only overlap with spans in right, but after the merge we can
-		// have new overlaps; hence why this is a loop and we check against both
-		// left and right. For example:
-		//   left : [/1 - /10] [/20 - /30] [/40 - /50]
-		//   right: [/5 - /25] [/30 - /40]
-		//                             span
-		//   initial:                [/1 - /10]
-		//   merge with [/5 - /25]:  [/1 - /25]
-		//   merge with [/20 - /30]: [/1 - /30]
-		//   merge with [/30 - /40]: [/1 - /40]
-		//   merge with [/40 - /50]: [/1 - /50]
-		//
-		mergeSpan := *left.Get(leftIndex)
-		leftIndex++
-		for {
-			// Note that Span.TryUnionWith returns false for a different reason
-			// than Constraint.tryUnionWith. Span.TryUnionWith returns false
-			// when the spans are not contiguous, and therefore the union cannot
-			// be represented as a valid Span. Constraint.tryUnionWith returns
-			// false when the merged spans are unconstrained (cover entire key
-			// range), and therefore the union cannot be represented as a valid
-			// Constraint.
-			var ok bool
-			if leftIndex < left.Count() {
-				if mergeSpan.TryUnionWith(&keyCtx, left.Get(leftIndex)) {
-					leftIndex++
-					ok = true
-				}
-			}
-			if rightIndex < right.Count() {
-				if mergeSpan.TryUnionWith(&keyCtx, right.Get(rightIndex)) {
-					rightIndex++
-					ok = true
-				}
-			}
-
-			// If neither union succeeded, then it means either:
-			//   1. The spans don't merge into a single contiguous span, and will
-			//      need to be represented separately in this constraint.
-			//   2. There are no more spans to merge.
-			if !ok {
-				break
-			}
-		}
-		result.Append(&mergeSpan)
+	var mergeSpan Span
+	swapLeftRight := func() {
+		left, right = right, left
+		leftIndex, rightIndex = rightIndex, leftIndex
 	}
+	makeMergeSpan := func() {
+		if leftIndex >= left.Count() || (rightIndex < right.Count() &&
+			left.Get(leftIndex).Compare(&keyCtx, right.Get(rightIndex)) > 0) {
+			// Swap the two sets, so that going forward the current left
+			// span starts before the current right span.
+			swapLeftRight()
+		}
+		mergeSpan = *left.Get(leftIndex)
+		leftIndex++
+	}
+	makeMergeSpan()
+	for rightIndex < right.Count() {
+		rightSpan := right.Get(rightIndex)
+		// Invariant: mergeSpan.CompareStarts(rightSpan) <= 0
+		cmpEndWithStart := mergeSpan.end.Compare(
+			&keyCtx, rightSpan.start, mergeSpan.endExt(), rightSpan.startExt())
+		if cmpEndWithStart >= 0 {
+			// Can extend mergeSpan
+			cmpEnds := mergeSpan.CompareEnds(&keyCtx, rightSpan)
+			if cmpEnds < 0 {
+				// There is a real extension.
+				mergeSpan.end = rightSpan.end
+				mergeSpan.endBoundary = rightSpan.endBoundary
+				rightIndex++
+				// The right side contributed the extension
+				swapLeftRight()
+			} else {
+				rightIndex++
+			}
+			continue
+		}
+		// Cannot extend mergeSpan.
+		result.Append(&mergeSpan)
+		makeMergeSpan()
+	}
+	result.Append(&mergeSpan)
+	for ; leftIndex < left.Count(); leftIndex++ {
+		result.Append(left.Get(leftIndex))
+	}
+	// TODO: update comments
+	// Merge this span with any overlapping spans in left or right. Initially,
+	// it can only overlap with spans in right, but after the merge we can
+	// have new overlaps; hence why this is a loop and we check against both
+	// left and right. For example:
+	//   left : [/1 - /10] [/20 - /30] [/40 - /50]
+	//   right: [/5 - /25] [/30 - /40]
+	//                             span
+	//   initial:                [/1 - /10]
+	//   merge with [/5 - /25]:  [/1 - /25]
+	//   merge with [/20 - /30]: [/1 - /30]
+	//   merge with [/30 - /40]: [/1 - /40]
+	//   merge with [/40 - /50]: [/1 - /50]
+	//
 
 	c.Spans = result
 	c.Spans.makeImmutable()
@@ -174,7 +176,9 @@ func (c *Constraint) IntersectWith(evalCtx *tree.EvalContext, other *Constraint)
 	if c.IsContradiction() || other.IsUnconstrained() {
 		return
 	}
-
+	if c.Spans.Count() == 0 || other.Spans.Count() == 0 {
+		return
+	}
 	// Use variation on merge sort, because both sets of spans are ordered and
 	// non-overlapping.
 
@@ -185,28 +189,92 @@ func (c *Constraint) IntersectWith(evalCtx *tree.EvalContext, other *Constraint)
 	keyCtx := MakeKeyContext(&c.Columns, evalCtx)
 	var result Spans
 	result.Alloc(left.Count())
-
+	// The current span being intersected with. Has a start <= the start of
+	// the other span.
+	var mergeSpan Span
+	// Whether the mergeSpan has been initialized.
+	var mergeSpanInitialized bool
+	swapLeftRight := func() {
+		left, right = right, left
+		leftIndex, rightIndex = rightIndex, leftIndex
+	}
+	// Initializes mergeSpan. Additionally, arranges it such that the span has
+	// come from left. leftIndex continues to refer to the index used to
+	// initialize mergeSpan.
+	// REQUIRES: leftIndex < left.Count() && rightIndex < right.Count()
+	initMergeSpan := func() {
+		leftSpan := left.Get(leftIndex)
+		rightSpan := right.Get(rightIndex)
+		if leftSpan.CompareStarts(&keyCtx, rightSpan) > 0 {
+			swapLeftRight()
+		}
+		mergeSpan = *left.Get(leftIndex)
+		mergeSpanInitialized = true
+	}
 	for leftIndex < left.Count() && rightIndex < right.Count() {
-		if left.Get(leftIndex).StartsAfter(&keyCtx, right.Get(rightIndex)) {
-			rightIndex++
-			continue
+		if !mergeSpanInitialized {
+			initMergeSpan()
 		}
 
-		mergeSpan := *left.Get(leftIndex)
-		if !mergeSpan.TryIntersectWith(&keyCtx, right.Get(rightIndex)) {
-			leftIndex++
-			continue
-		}
-		result.Append(&mergeSpan)
+		rightSpan := right.Get(rightIndex)
+		cmpEndWithStart := mergeSpan.end.Compare(
+			&keyCtx, rightSpan.start, mergeSpan.endExt(), rightSpan.startExt())
+		if cmpEndWithStart > 0 {
+			// The intersection of these spans is non-empty.
+			mergeSpan.start = rightSpan.start
+			mergeSpan.startBoundary = rightSpan.startBoundary
+			mergeSpanEnd := mergeSpan.end
+			mergeSpanEndBoundary := mergeSpan.endBoundary
+			cmpEnds := mergeSpan.CompareEnds(&keyCtx, rightSpan)
+			if cmpEnds > 0 {
+				// The rightSpan constrains the end of the intersection.
+				mergeSpan.end = rightSpan.end
+				mergeSpan.endBoundary = rightSpan.endBoundary
+			}
+			result.Append(&mergeSpan)
 
-		// Skip past whichever span ends first, or skip past both if they have
-		// the same endpoint.
-		cmp := left.Get(leftIndex).CompareEnds(&keyCtx, right.Get(rightIndex))
-		if cmp <= 0 {
+			// Now decide whether we should continue intersecting with what
+			// is left of the original mergeSpan.
+			if cmpEnds < 0 {
+				// The mergeSpan constrained the end of the intersection.
+				// So nothing left of the original mergeSpan. The rightSpan
+				// should become the new mergeSpan since it is guaranteed to
+				// have a start <= the next span from the left and has something
+				// leftover.
+				leftIndex++
+				mergeSpan.start = mergeSpan.end
+				switch mergeSpan.endBoundary {
+				case IncludeBoundary:
+					mergeSpan.startBoundary = ExcludeBoundary
+				case ExcludeBoundary:
+					mergeSpan.startBoundary = IncludeBoundary
+				}
+				mergeSpan.end = rightSpan.end
+				mergeSpan.endBoundary = rightSpan.endBoundary
+				swapLeftRight()
+			} else if cmpEnds > 0 {
+				// The rightSpan constrained the end of the intersection.
+				// So there is something left of the original mergeSpan.
+				rightIndex++
+				mergeSpan.start = mergeSpan.end
+				switch mergeSpan.endBoundary {
+				case IncludeBoundary:
+					mergeSpan.startBoundary = ExcludeBoundary
+				case ExcludeBoundary:
+					mergeSpan.startBoundary = IncludeBoundary
+				}
+				mergeSpan.end = mergeSpanEnd
+				mergeSpan.endBoundary = mergeSpanEndBoundary
+			} else {
+				// Both spans ended at the same key, so both are consumed.
+				leftIndex++
+				rightIndex++
+				mergeSpanInitialized = false
+			}
+		} else {
+			// Intersection is empty
 			leftIndex++
-		}
-		if cmp >= 0 {
-			rightIndex++
+			mergeSpanInitialized = false
 		}
 	}
 

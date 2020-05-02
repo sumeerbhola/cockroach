@@ -234,6 +234,8 @@ func (sp *Span) TryIntersectWith(keyCtx *KeyContext, other *Span) bool {
 	return true
 }
 
+// TODO: remove this function since unused.
+
 // TryUnionWith attempts to merge this span with the given span. If the merged
 // spans cannot be expressed as a single span, then TryUnionWith will not
 // update the span and TryUnionWith returns false. This could occur if the

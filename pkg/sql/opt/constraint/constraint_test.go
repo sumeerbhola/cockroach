@@ -12,6 +12,7 @@ package constraint
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -539,5 +540,90 @@ func TestExtractNotNullCols(t *testing.T) {
 				t.Errorf("expected %s; got %s", exp, cols)
 			}
 		})
+	}
+}
+
+func makeKeyConstraints(
+	count int, start1 int, start2 int, width int, step int,
+) (Constraint, Constraint) {
+	aRep := tree.NewDString(strings.Repeat("a", 50))
+	var s1, s2 Spans
+	makeAndAddSpan := func(start, end int, spans *Spans) {
+		kStart := MakeCompositeKey(aRep, tree.NewDInt(tree.DInt(start)))
+		kEnd := MakeCompositeKey(aRep, tree.NewDInt(tree.DInt(end)))
+		var span Span
+		span.Init(kStart, IncludeBoundary, kEnd, IncludeBoundary)
+		spans.Append(&span)
+	}
+	for i := 0; i < count; i++ {
+		makeAndAddSpan(start1+step*i, start1+step*i+width, &s1)
+		makeAndAddSpan(start2+step*i, start2+step*i+width, &s2)
+	}
+	var cols Columns
+	cols.Init([]opt.OrderingColumn{1, 2})
+	return Constraint{Columns: cols, Spans: s1}, Constraint{Columns: cols, Spans: s2}
+}
+
+func makeNonOverlappingConstraints(count int) (Constraint, Constraint) {
+	return makeKeyConstraints(count, 0, 5, 3, 10)
+}
+
+func makeOverlappingConstraints(count int) (Constraint, Constraint) {
+	return makeKeyConstraints(count, 0, 5, 6, 10)
+}
+
+func BenchmarkUnion(b *testing.B) {
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := tree.MakeTestingEvalContext(st)
+	for _, overlapping := range []bool{false, true} {
+		b.Run(
+			fmt.Sprintf("overlapping=%t", overlapping),
+			func(b *testing.B) {
+				var c1, c2 Constraint
+				if overlapping {
+					c1, c2 = makeOverlappingConstraints(50)
+				} else {
+					c1, c2 = makeNonOverlappingConstraints(50)
+				}
+				c1Copies := make([]Constraint, b.N)
+				for i := 0; i < b.N; i++ {
+					c1Copies[i].Columns = c1.Columns
+					for j := 0; j < c1.Spans.Count(); j++ {
+						c1Copies[i].Spans.Append(c1.Spans.Get(j))
+					}
+				}
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					c1Copies[i].UnionWith(&evalCtx, &c2)
+				}
+			})
+	}
+}
+
+func BenchmarkIntersection(b *testing.B) {
+	st := cluster.MakeTestingClusterSettings()
+	evalCtx := tree.MakeTestingEvalContext(st)
+	for _, overlapping := range []bool{false, true} {
+		b.Run(
+			fmt.Sprintf("overlapping=%t", overlapping),
+			func(b *testing.B) {
+				var c1, c2 Constraint
+				if overlapping {
+					c1, c2 = makeOverlappingConstraints(50)
+				} else {
+					c1, c2 = makeNonOverlappingConstraints(50)
+				}
+				c1Copies := make([]Constraint, b.N)
+				for i := 0; i < b.N; i++ {
+					c1Copies[i].Columns = c1.Columns
+					for j := 0; j < c1.Spans.Count(); j++ {
+						c1Copies[i].Spans.Append(c1.Spans.Get(j))
+					}
+				}
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					c1Copies[i].IntersectWith(&evalCtx, &c2)
+				}
+			})
 	}
 }
