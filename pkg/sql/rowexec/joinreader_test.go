@@ -782,8 +782,8 @@ func BenchmarkJoinReader(b *testing.B) {
 		matchesPerLookupRow int
 	}
 	rightSideColumnDefs := []rightSideColumnDef{
-		{name: "one", matchesPerLookupRow: 1},
-		{name: "four", matchesPerLookupRow: 4},
+		// {name: "one", matchesPerLookupRow: 1},
+		// {name: "four", matchesPerLookupRow: 4},
 		{name: "sixteen", matchesPerLookupRow: 16},
 		{name: "thirtytwo", matchesPerLookupRow: 32},
 		{name: "sixtyfour", matchesPerLookupRow: 64},
@@ -829,9 +829,10 @@ func BenchmarkJoinReader(b *testing.B) {
 	createRightSideTable(rightSz)
 	// Create a new txn after the table has been created.
 	flowCtx.Txn = kv.NewTxn(ctx, s.DB(), s.NodeID())
-	for _, reqOrdering := range []bool{true, false} {
+	for _, reqOrdering := range []bool{true} {
 		for columnIdx, columnDef := range rightSideColumnDefs {
-			for _, numLookupRows := range []int{1, 1 << 4 /* 16 */, 1 << 8 /* 256 */, 1 << 10 /* 1024 */, 1 << 12 /* 4096 */, 1 << 13 /* 8192 */, 1 << 14 /* 16384 */, 1 << 15 /* 32768 */, 1 << 16 /* 65,536 */, 1 << 19 /* 524,288 */} {
+			for _, numLookupRows := range []int{1 << 8 /* 256 */, 1 << 10 /* 1024 */, 1 << 12 /* 4096 */, 1 << 13 /* 8192 */, 1 << 14 /* 16384 */, 1 << 15 /* 32768 */} {
+				// for _, numLookupRows := range []int{1, 1 << 4 /* 16 */, 1 << 8 /* 256 */, 1 << 10 /* 1024 */, 1 << 12 /* 4096 */, 1 << 13 /* 8192 */, 1 << 14 /* 16384 */, 1 << 15 /* 32768 */, 1 << 16 /* 65,536 */, 1 << 19 /* 524,288 */} {
 				if rightSz/columnDef.matchesPerLookupRow < numLookupRows {
 					// This case does not make sense since we won't have distinct lookup
 					// rows. We don't currently merge spans which could make this an
@@ -897,12 +898,23 @@ func BenchmarkJoinReader(b *testing.B) {
 
 						spilled := false
 						for i := 0; i < b.N; i++ {
+							flowCtx.Cfg.TestingKnobs.MemoryLimitBytes = 100 << 10
 							jr, err := newJoinReader(&flowCtx, 0 /* processorID */, &spec, input, &post, &output)
 							if err != nil {
 								b.Fatal(err)
 							}
 							jr.Run(ctx)
+							/*
+								jreader := jr.(*joinReader)
+								strategy := jreader.strategy.(*joinReaderOrderingStrategy)
+								rc := strategy.lookedUpRows.(*rowcontainer.DiskBackedIndexedRowContainer)
+								b.Logf("hit rate: %.2f, maxCacheSize: %d\n",
+									float64(rc.HitCount())/float64(rc.MissCount()+rc.HitCount()),
+									rc.MaxCacheSize())
+							*/
 							if !spilled && jr.(*joinReader).Spilled() {
+								// This cumulative state is not kept in DiskBackedIndexedRowContainer so if the
+								// last batch did not spill we will not get an interesting result.
 								spilled = true
 							}
 							meta := output.DrainMeta(ctx)
@@ -917,7 +929,8 @@ func BenchmarkJoinReader(b *testing.B) {
 						}
 
 						if spilled {
-							b.Log("joinReader spilled to disk in at least one of the benchmark iterations")
+							// fmt.Printf("joinReader spilled to disk in at least one of the benchmark iterations")
+							// b.Log("joinReader spilled to disk in at least one of the benchmark iterations")
 						}
 					})
 				}

@@ -456,6 +456,8 @@ func BenchmarkNumberedContainerIteratorCaching(b *testing.B) {
 	// 20000 accesses. With a left batch of 100 rows, each left row is accessing
 	// 200 right rows. For each left row the starting point of the access is
 	// random and then 200 consecutive rows are read.
+	// TODO(sumeer): confirm that scan will return rows in order of the lookup
+	// key.
 	ljAccessPattern := generateLookupJoinAccessPattern(rng, numRows, 2)
 	// 0.25 * 10000 = 2500 right rows are accessed. The remaining 7500 rows are
 	// in the store but never accessed. With a left batch of 100 rows, and 100

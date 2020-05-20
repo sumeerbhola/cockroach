@@ -665,6 +665,10 @@ type DiskBackedIndexedRowContainer struct {
 
 var _ IndexedRowContainer = &DiskBackedIndexedRowContainer{}
 
+func (f *DiskBackedIndexedRowContainer) HitCount() int     { return f.hitCount }
+func (f *DiskBackedIndexedRowContainer) MissCount() int    { return f.missCount }
+func (f *DiskBackedIndexedRowContainer) MaxCacheSize() int { return f.maxCacheSize }
+
 // NewDiskBackedIndexedRowContainer creates a DiskBackedIndexedRowContainer
 // with the given engine as the underlying store that rows are stored on when
 // it spills to disk.

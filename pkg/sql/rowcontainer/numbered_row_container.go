@@ -397,7 +397,6 @@ func (n *numberedDiskRowIterator) getRow(
 	} else {
 		nextAccess = math.MaxInt32
 	}
-
 	// Check for cache hit. This also updates the heap position,
 	// which we need to do even for skip == true.
 	if elem.row != nil {
