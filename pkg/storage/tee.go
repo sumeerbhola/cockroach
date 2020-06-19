@@ -147,17 +147,17 @@ func (t *TeeEngine) GetProto(
 
 // Iterate implements the Engine interface.
 func (t *TeeEngine) Iterate(
-	start, end roachpb.Key, f func(MVCCKeyValue) (stop bool, err error),
+	start, end roachpb.Key, seeIntents bool, f func(MVCCKeyValue) (stop bool, err error),
 ) error {
 	return iterateOnReader(t, start, end, f)
 }
 
 // NewIterator implements the Engine interface.
-func (t *TeeEngine) NewIterator(opts IterOptions) Iterator {
+func (t *TeeEngine) NewIterator(opts IterOptions, iterKind IterKind) Iterator {
 	return &TeeEngineIter{
 		ctx:   t.ctx,
-		iter1: t.eng1.NewIterator(opts),
-		iter2: t.eng2.NewIterator(opts),
+		iter1: t.eng1.NewIterator(opts, MVCCKeyAndIntentsIterKind),
+		iter2: t.eng2.NewIterator(opts, MVCCKeyAndIntentsIterKind),
 	}
 }
 
@@ -175,11 +175,19 @@ func (t *TeeEngine) Clear(key MVCCKey) error {
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
+func (t *TeeEngine) ClearStorageKey(key StorageKey) error {
+	panic("unimplemented")
+}
+
 // SingleClear implements the Engine interface.
 func (t *TeeEngine) SingleClear(key MVCCKey) error {
 	err := t.eng1.SingleClear(key)
 	err2 := t.eng2.SingleClear(key)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
+}
+
+func (t *TeeEngine) SingleClearStorage(key StorageKey) error {
+	panic("unimplemented")
 }
 
 // ClearRange implements the Engine interface.
@@ -189,10 +197,14 @@ func (t *TeeEngine) ClearRange(start, end MVCCKey) error {
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
-// ClearIterRange implements the Engine interface.
+func (t *TeeEngine) ClearRangeStorage(start, end StorageKey) error {
+	panic("unimplemented")
+}
+
+// ClearIterMVCCRangeAndIntents implements the Engine interface.
 func (t *TeeEngine) ClearIterRange(iter Iterator, start, end roachpb.Key) error {
-	err := t.eng1.ClearIterRange(iter.(*TeeEngineIter).iter1, start, end)
-	err2 := t.eng2.ClearIterRange(iter.(*TeeEngineIter).iter2, start, end)
+	err := t.eng1.ClearIterMVCCRangeAndIntents(iter.(*TeeEngineIter).iter1, start, end)
+	err2 := t.eng2.ClearIterMVCCRangeAndIntents(iter.(*TeeEngineIter).iter2, start, end)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
@@ -208,6 +220,10 @@ func (t *TeeEngine) Put(key MVCCKey, value []byte) error {
 	err := t.eng1.Put(key, value)
 	err2 := t.eng2.Put(key, value)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
+}
+
+func (t *TeeEngine) PutStorage(key StorageKey, value []byte) error {
+	panic("unimplemented")
 }
 
 // LogData implements the Engine interface.
@@ -703,11 +719,19 @@ func (t *TeeEngineReadWriter) Clear(key MVCCKey) error {
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
+func (t *TeeEngineReadWriter) ClearStorageKey(key StorageKey) error {
+	panic("unimplemented")
+}
+
 // SingleClear implements the ReadWriter interface.
 func (t *TeeEngineReadWriter) SingleClear(key MVCCKey) error {
 	err := t.reader1.(ReadWriter).SingleClear(key)
 	err2 := t.reader2.(ReadWriter).SingleClear(key)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
+}
+
+func (t *TeeEngineReadWriter) SingleClearStorage(key StorageKey) error {
+	panic("unimplemented")
 }
 
 // ClearRange implements the ReadWriter interface.
@@ -717,10 +741,14 @@ func (t *TeeEngineReadWriter) ClearRange(start, end MVCCKey) error {
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
-// ClearIterRange implements the ReadWriter interface.
+func (t *TeeEngineReadWriter) ClearRangeStorage(start, end StorageKey) error {
+	panic("unimplemented")
+}
+
+// ClearIterMVCCRangeAndIntents implements the ReadWriter interface.
 func (t *TeeEngineReadWriter) ClearIterRange(iter Iterator, start, end roachpb.Key) error {
-	err := t.reader1.(ReadWriter).ClearIterRange(iter.(*TeeEngineIter).iter1, start, end)
-	err2 := t.reader2.(ReadWriter).ClearIterRange(iter.(*TeeEngineIter).iter2, start, end)
+	err := t.reader1.(ReadWriter).ClearIterMVCCRangeAndIntents(iter.(*TeeEngineIter).iter1, start, end)
+	err2 := t.reader2.(ReadWriter).ClearIterMVCCRangeAndIntents(iter.(*TeeEngineIter).iter2, start, end)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
@@ -736,6 +764,10 @@ func (t *TeeEngineReadWriter) Put(key MVCCKey, value []byte) error {
 	err := t.reader1.(ReadWriter).Put(key, value)
 	err2 := t.reader2.(ReadWriter).Put(key, value)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
+}
+
+func (t *TeeEngineReadWriter) PutStorage(key StorageKey, value []byte) error {
+	panic("unimplemented")
 }
 
 // LogData implements the ReadWriter interface.
@@ -843,17 +875,17 @@ func (t *TeeEngineReader) GetProto(
 
 // Iterate implements the Reader interface.
 func (t *TeeEngineReader) Iterate(
-	start, end roachpb.Key, f func(MVCCKeyValue) (stop bool, err error),
+	start, end roachpb.Key, seeIntents bool, f func(MVCCKeyValue) (stop bool, err error),
 ) error {
 	return iterateOnReader(t, start, end, f)
 }
 
 // NewIterator implements the Reader interface.
-func (t *TeeEngineReader) NewIterator(opts IterOptions) Iterator {
+func (t *TeeEngineReader) NewIterator(opts IterOptions, iterKind IterKind) Iterator {
 	return &TeeEngineIter{
 		ctx:   t.ctx,
-		iter1: t.reader1.NewIterator(opts),
-		iter2: t.reader2.NewIterator(opts),
+		iter1: t.reader1.NewIterator(opts, MVCCKeyAndIntentsIterKind),
+		iter2: t.reader2.NewIterator(opts, MVCCKeyAndIntentsIterKind),
 	}
 }
 
@@ -945,15 +977,15 @@ func (t *TeeEngineBatch) GetProto(
 
 // Iterate implements the Batch interface.
 func (t *TeeEngineBatch) Iterate(
-	start, end roachpb.Key, f func(MVCCKeyValue) (stop bool, err error),
+	start, end roachpb.Key, seeIntents bool, f func(MVCCKeyValue) (stop bool, err error),
 ) error {
 	return iterateOnReader(t, start, end, f)
 }
 
 // NewIterator implements the Batch interface.
-func (t *TeeEngineBatch) NewIterator(opts IterOptions) Iterator {
-	iter1 := t.batch1.NewIterator(opts)
-	iter2 := t.batch2.NewIterator(opts)
+func (t *TeeEngineBatch) NewIterator(opts IterOptions, iterKind IterKind) Iterator {
+	iter1 := t.batch1.NewIterator(opts, MVCCKeyAndIntentsIterKind)
+	iter2 := t.batch2.NewIterator(opts, MVCCKeyAndIntentsIterKind)
 	return &TeeEngineIter{
 		ctx:   t.ctx,
 		iter1: iter1,
@@ -975,11 +1007,19 @@ func (t *TeeEngineBatch) Clear(key MVCCKey) error {
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
+func (t *TeeEngineBatch) ClearStorageKey(key StorageKey) error {
+	panic("unimplemented")
+}
+
 // SingleClear implements the Batch interface.
 func (t *TeeEngineBatch) SingleClear(key MVCCKey) error {
 	err := t.batch1.SingleClear(key)
 	err2 := t.batch2.SingleClear(key)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
+}
+
+func (t *TeeEngineBatch) SingleClearStorage(key StorageKey) error {
+	panic("unimplemented")
 }
 
 // ClearRange implements the Batch interface.
@@ -989,10 +1029,14 @@ func (t *TeeEngineBatch) ClearRange(start, end MVCCKey) error {
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
-// ClearIterRange implements the Batch interface.
+func (t *TeeEngineBatch) ClearRangeStorage(start, end StorageKey) error {
+	panic("unimplemented")
+}
+
+// ClearIterMVCCRangeAndIntents implements the Batch interface.
 func (t *TeeEngineBatch) ClearIterRange(iter Iterator, start, end roachpb.Key) error {
-	err := t.batch1.ClearIterRange(iter.(*TeeEngineIter).iter1, start, end)
-	err2 := t.batch2.ClearIterRange(iter.(*TeeEngineIter).iter2, start, end)
+	err := t.batch1.ClearIterMVCCRangeAndIntents(iter.(*TeeEngineIter).iter1, start, end)
+	err2 := t.batch2.ClearIterMVCCRangeAndIntents(iter.(*TeeEngineIter).iter2, start, end)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
 }
 
@@ -1008,6 +1052,10 @@ func (t *TeeEngineBatch) Put(key MVCCKey, value []byte) error {
 	err := t.batch1.Put(key, value)
 	err2 := t.batch2.Put(key, value)
 	return fatalOnErrorMismatch(t.ctx, err, err2)
+}
+
+func (t *TeeEngineBatch) PutStorage(key StorageKey, value []byte) error {
+	panic("unimplemented")
 }
 
 // LogData implements the Batch interface.
@@ -1118,6 +1166,10 @@ func (t *TeeEngineIter) SeekGE(key MVCCKey) {
 	t.check()
 }
 
+func (t *TeeEngineIter) SeekStorageGE(key StorageKey) {
+	panic("unimplemented")
+}
+
 // Valid implements the Iterator interface.
 func (t *TeeEngineIter) Valid() (bool, error) {
 	return t.iter1.Valid()
@@ -1142,6 +1194,10 @@ func (t *TeeEngineIter) UnsafeKey() MVCCKey {
 	return t.iter1.UnsafeKey()
 }
 
+func (t *TeeEngineIter) UnsafeStorageKey() StorageKey {
+	panic("unimplemented")
+}
+
 // UnsafeValue implements the Iterator interface.
 func (t *TeeEngineIter) UnsafeValue() []byte {
 	return t.iter1.UnsafeValue()
@@ -1152,6 +1208,10 @@ func (t *TeeEngineIter) SeekLT(key MVCCKey) {
 	t.iter1.SeekLT(key)
 	t.iter2.SeekLT(key)
 	t.check()
+}
+
+func (t *TeeEngineIter) SeekStorageLT(key StorageKey) {
+	panic("unimplemented")
 }
 
 // Prev implements the Iterator interface.
@@ -1166,9 +1226,13 @@ func (t *TeeEngineIter) Key() MVCCKey {
 	return t.iter1.Key()
 }
 
-// UnsafeRawKey implements the Iterator interface.
-func (t *TeeEngineIter) UnsafeRawKey() []byte {
-	return t.iter1.UnsafeRawKey()
+func (t *TeeEngineIter) StorageKey() StorageKey {
+	return t.iter1.StorageKey()
+}
+
+// UnsafeRawKeyDangerous implements the Iterator interface.
+func (t *TeeEngineIter) UnsafeRawKeyDangerous() []byte {
+	return t.iter1.UnsafeRawKeyDangerous()
 }
 
 // Value implements the Iterator interface.

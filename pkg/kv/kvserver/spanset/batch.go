@@ -84,12 +84,20 @@ func (i *Iterator) SeekGE(key storage.MVCCKey) {
 	i.checkAllowed(roachpb.Span{Key: key.Key}, true)
 }
 
+func (i *Iterator) SeekStorageGE(key storage.StorageKey) {
+	panic("must not call SeekStorageGE")
+}
+
 // SeekLT is part of the engine.Iterator interface.
 func (i *Iterator) SeekLT(key storage.MVCCKey) {
 	i.i.SeekLT(key)
 	// CheckAllowed{At} supports the span representation of [,key), which
 	// corresponds to the span [key.Prev(),).
 	i.checkAllowed(roachpb.Span{EndKey: key.Key}, true)
+}
+
+func (i *Iterator) SeekStorageLT(key storage.StorageKey) {
+	panic("must not call SeekStorageLT")
 }
 
 // Next is part of the engine.Iterator interface.
@@ -137,6 +145,10 @@ func (i *Iterator) Key() storage.MVCCKey {
 	return i.i.Key()
 }
 
+func (i *Iterator) StorageKey() storage.StorageKey {
+	panic("must not call StorageKey")
+}
+
 // Value is part of the engine.Iterator interface.
 func (i *Iterator) Value() []byte {
 	return i.i.Value()
@@ -152,9 +164,13 @@ func (i *Iterator) UnsafeKey() storage.MVCCKey {
 	return i.i.UnsafeKey()
 }
 
-// UnsafeRawKey is part of the engine.Iterator interface.
-func (i *Iterator) UnsafeRawKey() []byte {
-	return i.i.UnsafeRawKey()
+func (i *Iterator) UnsafeStorageKey() storage.StorageKey {
+	panic("must not call UnsafeStorageKey")
+}
+
+// UnsafeRawKeyDangerous is part of the engine.Iterator interface.
+func (i *Iterator) UnsafeRawKeyDangerous() []byte {
+	return i.i.UnsafeRawKeyDangerous()
 }
 
 // UnsafeValue is part of the engine.Iterator interface.
@@ -316,7 +332,7 @@ func (s spanSetReader) GetProto(
 }
 
 func (s spanSetReader) Iterate(
-	start, end roachpb.Key, f func(storage.MVCCKeyValue) (bool, error),
+	start, end roachpb.Key, seeIntents bool, f func(storage.MVCCKeyValue) (stop bool, err error),
 ) error {
 	if s.spansOnly {
 		if err := s.spans.CheckAllowed(SpanReadOnly, roachpb.Span{Key: start, EndKey: end}); err != nil {
@@ -327,14 +343,16 @@ func (s spanSetReader) Iterate(
 			return err
 		}
 	}
-	return s.r.Iterate(start, end, f)
+	return s.r.Iterate(start, end, true, f)
 }
 
-func (s spanSetReader) NewIterator(opts storage.IterOptions) storage.Iterator {
+func (s spanSetReader) NewIterator(
+	opts storage.IterOptions, iterKind storage.IterKind,
+) storage.Iterator {
 	if s.spansOnly {
-		return NewIterator(s.r.NewIterator(opts), s.spans)
+		return NewIterator(s.r.NewIterator(opts, storage.MVCCKeyAndIntentsIterKind), s.spans)
 	}
-	return NewIteratorAt(s.r.NewIterator(opts), s.spans, s.ts)
+	return NewIteratorAt(s.r.NewIterator(opts, storage.MVCCKeyAndIntentsIterKind), s.spans, s.ts)
 }
 
 // GetDBEngine recursively searches for the underlying rocksDB engine.
@@ -384,7 +402,12 @@ func (s spanSetWriter) Clear(key storage.MVCCKey) error {
 			return err
 		}
 	}
+	// TODO: decide which Clear* to call. I don't know what spanSetWriter is used for.
 	return s.w.Clear(key)
+}
+
+func (s spanSetWriter) ClearStorageKey(key storage.StorageKey) error {
+	panic("must not call ClearStorage")
 }
 
 func (s spanSetWriter) SingleClear(key storage.MVCCKey) error {
@@ -400,6 +423,10 @@ func (s spanSetWriter) SingleClear(key storage.MVCCKey) error {
 	return s.w.SingleClear(key)
 }
 
+func (s spanSetWriter) SingleClearStorage(key storage.StorageKey) error {
+	panic("must not call SingleClearStorage")
+}
+
 func (s spanSetWriter) ClearRange(start, end storage.MVCCKey) error {
 	if s.spansOnly {
 		if err := s.spans.CheckAllowed(SpanReadWrite, roachpb.Span{Key: start.Key, EndKey: end.Key}); err != nil {
@@ -413,6 +440,10 @@ func (s spanSetWriter) ClearRange(start, end storage.MVCCKey) error {
 	return s.w.ClearRange(start, end)
 }
 
+func (s spanSetWriter) ClearRangeStorage(start, end storage.StorageKey) error {
+	panic("must not call ClearRangeStorage")
+}
+
 func (s spanSetWriter) ClearIterRange(iter storage.Iterator, start, end roachpb.Key) error {
 	if s.spansOnly {
 		if err := s.spans.CheckAllowed(SpanReadWrite, roachpb.Span{Key: start, EndKey: end}); err != nil {
@@ -423,7 +454,7 @@ func (s spanSetWriter) ClearIterRange(iter storage.Iterator, start, end roachpb.
 			return err
 		}
 	}
-	return s.w.ClearIterRange(iter, start, end)
+	return s.w.ClearIterMVCCRangeAndIntents(iter, start, end)
 }
 
 func (s spanSetWriter) Merge(key storage.MVCCKey, value []byte) error {
@@ -450,6 +481,10 @@ func (s spanSetWriter) Put(key storage.MVCCKey, value []byte) error {
 		}
 	}
 	return s.w.Put(key, value)
+}
+
+func (s spanSetWriter) PutStorage(key storage.StorageKey, value []byte) error {
+	panic("must not call PutStorage")
 }
 
 func (s spanSetWriter) LogData(data []byte) error {

@@ -288,54 +288,50 @@ func (c *Compactor) fetchSuggestions(
 ) (suggestions []kvserverpb.SuggestedCompaction, totalBytes int64, err error) {
 	dataIter := c.eng.NewIterator(storage.IterOptions{
 		UpperBound: roachpb.KeyMax, // refined before every seek
-	})
+	}, storage.MVCCKeyIterKind)
 	defer dataIter.Close()
 
 	delBatch := c.eng.NewBatch()
 	defer delBatch.Close()
 
-	err = c.eng.Iterate(
-		keys.LocalStoreSuggestedCompactionsMin,
-		keys.LocalStoreSuggestedCompactionsMax,
-		func(kv storage.MVCCKeyValue) (bool, error) {
-			var sc kvserverpb.SuggestedCompaction
-			var err error
-			sc.StartKey, sc.EndKey, err = keys.DecodeStoreSuggestedCompactionKey(kv.Key.Key)
-			if err != nil {
-				return false, errors.Wrapf(err, "failed to decode suggested compaction key")
-			}
-			if err := protoutil.Unmarshal(kv.Value, &sc.Compaction); err != nil {
-				return false, err
-			}
+	err = c.eng.Iterate(keys.LocalStoreSuggestedCompactionsMin, keys.LocalStoreSuggestedCompactionsMax, false, func(kv storage.MVCCKeyValue) (bool, error) {
+		var sc kvserverpb.SuggestedCompaction
+		var err error
+		sc.StartKey, sc.EndKey, err = keys.DecodeStoreSuggestedCompactionKey(kv.Key.Key)
+		if err != nil {
+			return false, errors.Wrapf(err, "failed to decode suggested compaction key")
+		}
+		if err := protoutil.Unmarshal(kv.Value, &sc.Compaction); err != nil {
+			return false, err
+		}
 
-			dataIter.SetUpperBound(sc.EndKey)
-			dataIter.SeekGE(storage.MakeMVCCMetadataKey(sc.StartKey))
-			if ok, err := dataIter.Valid(); err != nil {
-				return false, err
-			} else if ok && dataIter.UnsafeKey().Less(storage.MakeMVCCMetadataKey(sc.EndKey)) {
-				// The suggested compaction span has live keys remaining. This is a
-				// strong indicator that compacting this range will be significantly
-				// more expensive than we expected when the compaction was suggested, as
-				// compactions are only suggested when a ClearRange request has removed
-				// all the keys in the span. Perhaps a replica was rebalanced away then
-				// back?
-				//
-				// Since we can't guarantee that this compaction will be an easy win,
-				// purge it to avoid bogging down the compaction queue.
-				log.Infof(ctx, "purging suggested compaction for range %s - %s that contains live data",
-					sc.StartKey, sc.EndKey)
-				if err := delBatch.Clear(kv.Key); err != nil {
-					log.Fatalf(ctx, "%v", err) // should never happen on a batch
-				}
-				c.Metrics.BytesSkipped.Inc(sc.Bytes)
-			} else {
-				suggestions = append(suggestions, sc)
-				totalBytes += sc.Bytes
+		dataIter.SetUpperBound(sc.EndKey)
+		dataIter.SeekGE(storage.MakeMVCCMetadataKey(sc.StartKey))
+		if ok, err := dataIter.Valid(); err != nil {
+			return false, err
+		} else if ok && dataIter.UnsafeKey().Less(storage.MakeMVCCMetadataKey(sc.EndKey)) {
+			// The suggested compaction span has live keys remaining. This is a
+			// strong indicator that compacting this range will be significantly
+			// more expensive than we expected when the compaction was suggested, as
+			// compactions are only suggested when a ClearRange request has removed
+			// all the keys in the span. Perhaps a replica was rebalanced away then
+			// back?
+			//
+			// Since we can't guarantee that this compaction will be an easy win,
+			// purge it to avoid bogging down the compaction queue.
+			log.Infof(ctx, "purging suggested compaction for range %s - %s that contains live data",
+				sc.StartKey, sc.EndKey)
+			if err := delBatch.ClearKeyWithEmptyTimestamp(kv.Key.Key); err != nil {
+				log.Fatalf(ctx, "%v", err) // should never happen on a batch
 			}
+			c.Metrics.BytesSkipped.Inc(sc.Bytes)
+		} else {
+			suggestions = append(suggestions, sc)
+			totalBytes += sc.Bytes
+		}
 
-			return false, nil // continue iteration
-		},
-	)
+		return false, nil // continue iteration
+	})
 	if err != nil {
 		return nil, 0, err
 	}
@@ -402,7 +398,7 @@ func (c *Compactor) processCompaction(
 			c.Metrics.BytesSkipped.Inc(sc.Bytes)
 		}
 		key := keys.StoreSuggestedCompactionKey(sc.StartKey, sc.EndKey)
-		if err := delBatch.Clear(storage.MVCCKey{Key: key}); err != nil {
+		if err := delBatch.ClearKeyWithEmptyTimestamp(key); err != nil {
 			log.Fatalf(ctx, "%v", err) // should never happen on a batch
 		}
 	}
@@ -462,18 +458,14 @@ func (c *Compactor) aggregateCompaction(
 // BytesQueued gauge.
 func (c *Compactor) examineQueue(ctx context.Context) (int64, error) {
 	var totalBytes int64
-	if err := c.eng.Iterate(
-		keys.LocalStoreSuggestedCompactionsMin,
-		keys.LocalStoreSuggestedCompactionsMax,
-		func(kv storage.MVCCKeyValue) (bool, error) {
-			var c kvserverpb.Compaction
-			if err := protoutil.Unmarshal(kv.Value, &c); err != nil {
-				return false, err
-			}
-			totalBytes += c.Bytes
-			return false, nil // continue iteration
-		},
-	); err != nil {
+	if err := c.eng.Iterate(keys.LocalStoreSuggestedCompactionsMin, keys.LocalStoreSuggestedCompactionsMax, false, func(kv storage.MVCCKeyValue) (bool, error) {
+		var c kvserverpb.Compaction
+		if err := protoutil.Unmarshal(kv.Value, &c); err != nil {
+			return false, err
+		}
+		totalBytes += c.Bytes
+		return false, nil // continue iteration
+	}); err != nil {
 		return 0, err
 	}
 	c.Metrics.BytesQueued.Update(totalBytes)

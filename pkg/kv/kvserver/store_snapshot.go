@@ -333,12 +333,12 @@ func (kvSS *kvBatchSnapshotStrategy) Send(
 			break
 		}
 		kvs++
-		unsafeKey := iter.UnsafeKey()
+		unsafeKey := iter.UnsafeStorageKey()
 		unsafeValue := iter.UnsafeValue()
 		if b == nil {
 			b = kvSS.newBatch()
 		}
-		if err := b.Put(unsafeKey, unsafeValue); err != nil {
+		if err := b.PutRaw(unsafeKey, unsafeValue); err != nil {
 			return 0, err
 		}
 

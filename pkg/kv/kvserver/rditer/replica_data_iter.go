@@ -43,11 +43,13 @@ type ReplicaDataIterator struct {
 
 // MakeAllKeyRanges returns all key ranges for the given Range.
 func MakeAllKeyRanges(d *roachpb.RangeDescriptor) []KeyRange {
-	return []KeyRange{
+	ranges := []KeyRange{
 		MakeRangeIDLocalKeyRange(d.RangeID, false /* replicatedOnly */),
 		MakeRangeLocalKeyRange(d),
 		MakeUserKeyRange(d),
 	}
+	ranges = append(ranges, MakeRangeLockTableKeyRanges(d)...)
+	return ranges
 }
 
 // MakeReplicatedKeyRanges returns all key ranges that are fully Raft
@@ -60,11 +62,13 @@ func MakeAllKeyRanges(d *roachpb.RangeDescriptor) []KeyRange {
 // 2. Range-local key range
 // 3. User key range
 func MakeReplicatedKeyRanges(d *roachpb.RangeDescriptor) []KeyRange {
-	return []KeyRange{
+	ranges := []KeyRange{
 		MakeRangeIDLocalKeyRange(d.RangeID, true /* replicatedOnly */),
 		MakeRangeLocalKeyRange(d),
 		MakeUserKeyRange(d),
 	}
+	ranges = append(ranges, MakeRangeLockTableKeyRanges(d)...)
+	return ranges
 }
 
 // MakeRangeIDLocalKeyRange returns the range-id local key range. If
@@ -95,6 +99,23 @@ func MakeRangeLocalKeyRange(d *roachpb.RangeDescriptor) KeyRange {
 	}
 }
 
+func MakeRangeLockTableKeyRanges(d *roachpb.RangeDescriptor) []KeyRange {
+	return []KeyRange{
+		{
+			Start: storage.MakeMVCCMetadataKey(keys.MakeLockTableKeyPrefix(roachpb.Key(d.StartKey))),
+			End:   storage.MakeMVCCMetadataKey(keys.MakeLockTableKeyPrefix(roachpb.Key(d.EndKey))),
+		},
+		// Need to handle doubly-local lock table keys since RangeDescriptorKey
+		// is a range local key that can have a replicated lock acquired on it.
+		{
+			Start: storage.MakeMVCCMetadataKey(keys.MakeLockTableKeyPrefix(
+				keys.MakeRangeKeyPrefix(d.StartKey))),
+			End: storage.MakeMVCCMetadataKey(keys.MakeLockTableKeyPrefix(
+				keys.MakeRangeKeyPrefix(d.EndKey))),
+		},
+	}
+}
+
 // MakeUserKeyRange returns the user key range.
 func MakeUserKeyRange(d *roachpb.RangeDescriptor) KeyRange {
 	// The first range in the keyspace starts at KeyMin, which includes the
@@ -114,7 +135,7 @@ func MakeUserKeyRange(d *roachpb.RangeDescriptor) KeyRange {
 func NewReplicaDataIterator(
 	d *roachpb.RangeDescriptor, reader storage.Reader, replicatedOnly bool, seekEnd bool,
 ) *ReplicaDataIterator {
-	it := reader.NewIterator(storage.IterOptions{UpperBound: d.EndKey.AsRawKey()})
+	it := reader.NewIterator(storage.IterOptions{UpperBound: d.EndKey.AsRawKey()}, storage.StorageKeyIterKind)
 
 	rangeFunc := MakeAllKeyRanges
 	if replicatedOnly {

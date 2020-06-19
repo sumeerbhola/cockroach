@@ -45,7 +45,7 @@ func NewSSTIterator(path string) (SimpleIterator, error) {
 		return nil, err
 	}
 	sst, err := sstable.NewReader(file, sstable.ReaderOptions{
-		Comparer: MVCCComparer,
+		Comparer: StorageKeyComparer,
 	})
 	if err != nil {
 		return nil, err
@@ -59,7 +59,7 @@ func NewSSTIterator(path string) (SimpleIterator, error) {
 // format.
 func NewMemSSTIterator(data []byte, verify bool) (SimpleIterator, error) {
 	sst, err := sstable.NewReader(vfs.NewMemFile(data), sstable.ReaderOptions{
-		Comparer: MVCCComparer,
+		Comparer: StorageKeyComparer,
 	})
 	if err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func (r *sstIterator) SeekGE(key MVCCKey) {
 		}
 	}
 	var iKey *sstable.InternalKey
-	iKey, r.value = r.iter.SeekGE(EncodeKey(key))
+	iKey, r.value = r.iter.SeekGE(EncodeMVCCKey(key))
 	if iKey != nil {
 		r.iterValid = true
 		r.mvccKey, r.err = DecodeMVCCKey(iKey.UserKey)

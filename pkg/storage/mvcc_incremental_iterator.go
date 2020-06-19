@@ -64,11 +64,8 @@ import (
 // Since there is no delete across all sstables that deletes k@t#n1, there is
 // no delete in the subset of sstables used by timeBoundIter that deletes
 // k@t#n1, so the timeBoundIter will see k@t.
-//
-// NOTE: This is not used by CockroachDB and has been preserved to serve as an
-// oracle to prove the correctness of the new export logic.
 type MVCCIncrementalIterator struct {
-	iter Iterator
+	iter SimplePlusIterator
 
 	// A time-bound iterator cannot be used by itself due to a bug in the time-
 	// bound iterator (#28358). This was historically augmented with an iterator
@@ -107,20 +104,41 @@ type MVCCIncrementalIterOptions struct {
 // TODO(pbardea): Add validation here and in C++ implementation that the
 //  timestamp hints are not more restrictive than incremental iterator's
 //  (startTime, endTime] interval.
+//
+// The construction is happening while holding read latches at timestamp
+// t_e for the interval (t_s, t_e]. So no concurrent writes (including intent
+// resolution can occur at <= t_e). Intent resolution without holding
+// latches can be allowed in the future. Say the iterators are constructed as
+// - lockIter at t1
+// - valueIter at t2
+// - timeBoundIter at t3
+// k@t exists at t3. Say it is recently committed:
+// - valueIter sees k@t
+// - lockIter has an intent referring to k@t' where t' <= t. If there is
+//   any intent <= t_e in the lockIter we will report an error.
+//
+// TODO: the intentInterleavingIterator is not how we should really do this.
+// - acquire the latch: new intents cannot be created
+// - create an intentIter and iterate from lower to upper to confirm that
+//   there are no intents in (t_s, t_e]. Fail if they are.
+// - create an
 func NewMVCCIncrementalIterator(
 	reader Reader, opts MVCCIncrementalIterOptions,
 ) *MVCCIncrementalIterator {
-	var iter Iterator
+	var iter SimplePlusIterator
 	var timeBoundIter Iterator
 	if !opts.IterOptions.MinTimestampHint.IsEmpty() && !opts.IterOptions.MaxTimestampHint.IsEmpty() {
 		// An iterator without the timestamp hints is created to ensure that the
 		// iterator visits every required version of every key that has changed.
-		iter = reader.NewIterator(IterOptions{
+		iter = newIntentInterleavingIterator(reader, IterOptions{
 			UpperBound: opts.IterOptions.UpperBound,
 		})
-		timeBoundIter = reader.NewIterator(opts.IterOptions)
+		if _, ok := iter.(MetaIterator); !ok {
+			panic("")
+		}
+		timeBoundIter = reader.NewIterator(opts.IterOptions, MVCCKeyAndIntentsIterKind)
 	} else {
-		iter = reader.NewIterator(opts.IterOptions)
+		iter = newIntentInterleavingIterator(reader, opts.IterOptions)
 	}
 
 	return &MVCCIncrementalIterator{
@@ -232,7 +250,7 @@ func (i *MVCCIncrementalIterator) maybeSkipKeys() {
 
 		if cmp > 0 {
 			// If the tbiKey is still behind the iterKey, the TBI key may be seeing
-			// phantom MVCCKey.Keys. These keys may not be seen by the main iterator
+			// phantom Key.Keys. These keys may not be seen by the main iterator
 			// due to aborted transactions and keys which have been subsumed due to
 			// range tombstones. In this case we can SeekGE() the TBI to the main iterator.
 			seekKey := MakeMVCCMetadataKey(iterKey)
@@ -353,7 +371,7 @@ func (i *MVCCIncrementalIterator) Valid() (bool, error) {
 }
 
 // Key returns the current key.
-func (i *MVCCIncrementalIterator) Key() MVCCKey {
+func (i *MVCCIncrementalIterator) MVCCKey() MVCCKey {
 	return i.iter.Key()
 }
 

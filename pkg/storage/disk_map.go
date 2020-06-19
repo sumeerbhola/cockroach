@@ -121,7 +121,7 @@ func (r *rocksDBMap) NewIterator() diskmap.SortedDiskMapIterator {
 	return &rocksDBMapIterator{
 		iter: r.store.NewIterator(IterOptions{
 			UpperBound: roachpb.Key(r.prefix).PrefixEnd(),
-		}),
+		}, MVCCKeyAndIntentsIterKind),
 		makeKey: r.makeKey,
 		prefix:  r.prefix,
 	}
