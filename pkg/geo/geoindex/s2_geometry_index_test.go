@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/geo"
+	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/geo/geos"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/datadriven"
@@ -30,19 +31,23 @@ func TestS2GeometryIndexBasic(t *testing.T) {
 	datadriven.RunTest(t, "testdata/s2_geometry", func(t *testing.T, d *datadriven.TestData) string {
 		switch d.Cmd {
 		case "init":
-			cfg := s2Config(t, d)
+			// cfg := s2Config(t, d)
 			var minX, minY, maxX, maxY int
 			d.ScanArgs(t, "minx", &minX)
 			d.ScanArgs(t, "miny", &minY)
 			d.ScanArgs(t, "maxx", &maxX)
 			d.ScanArgs(t, "maxy", &maxY)
-			index = NewS2GeometryIndex(S2GeometryConfig{
-				MinX:     float64(minX),
-				MinY:     float64(minY),
-				MaxX:     float64(maxX),
-				MaxY:     float64(maxY),
-				S2Config: &cfg,
-			})
+			/*
+				index = NewS2GeometryIndex(S2GeometryConfig{
+					MinX:     float64(minX),
+					MinY:     float64(minY),
+					MaxX:     float64(maxX),
+					MaxY:     float64(maxY),
+					S2Config: &cfg,
+				})
+
+			*/
+			index = NewS2GeometryIndex(*DefaultGeometryIndexConfig().S2Geometry)
 			return ""
 		case "geometry":
 			g, err := geo.ParseGeometry(d.Input)
@@ -51,6 +56,21 @@ func TestS2GeometryIndexBasic(t *testing.T) {
 			}
 			shapes[nameArg(t, d)] = g
 			return ""
+		case "geomhex":
+			g, err := geo.ParseEWKBHex(geopb.SpatialObjectType_GeometryType, d.Input, 0)
+			if err != nil {
+				return err.Error()
+			}
+			geom, err := geo.NewGeometry(g)
+			if err != nil {
+				return err.Error()
+			}
+			shapes[nameArg(t, d)] = geom
+			wkt, err := geo.SpatialObjectToWKT(geom.SpatialObject(), 22)
+			if err != nil {
+				return err.Error()
+			}
+			return string(wkt)
 		case "index-keys":
 			return keysToString(index.InvertedIndexKeys(ctx, shapes[nameArg(t, d)]))
 		case "inner-covering":

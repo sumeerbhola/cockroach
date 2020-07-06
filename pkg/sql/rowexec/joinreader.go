@@ -14,7 +14,9 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
@@ -82,6 +84,11 @@ type joinReader struct {
 
 	// State variables for each batch of input rows.
 	scratchInputRows sqlbase.EncDatumRows
+
+	inputRowCount  int64
+	outputRowCount int64
+
+	isGeo bool
 }
 
 var _ execinfra.Processor = &joinReader{}
@@ -177,15 +184,52 @@ func newJoinReader(
 		jr.fetcher = &fetcher
 	}
 
-	jr.initJoinReaderStrategy(flowCtx, jr.desc.ColumnTypesWithMutations(returnMutations), len(columnIDs), spec.MaintainOrdering)
+	var isGeo bool
+	var geoIndex int32
+	var geoType *types.T
+	{
+		if strings.Contains(strings.ToLower(spec.OnExpr.Expr), "st_") {
+			isGeo = true
+			jr.isGeo = true
+			geoIndex = -1
+			for i, t := range columnTypes {
+				if t.InternalType.Family == types.GeographyFamily || t.InternalType.Family == types.GeometryFamily {
+					geoIndex = int32(i)
+					geoType = t
+					break
+				}
+			}
+			if geoIndex == -1 {
+				panic("geoIndex = -1")
+			}
+			if !neededRightCols.Contains(int(geoIndex)) {
+				panic(errors.Errorf("neededRightCols %s did not contain geoIndex: %d", neededRightCols, geoIndex))
+			}
+			geoindex.NumInvertedIndexKeys = 0
+			geoindex.NumGeometryRows = 0
+			geoindex.SumAreaRatio = 0
+			geoindex.NumBadPolys = 0
+		}
+	}
+	jr.initJoinReaderStrategy(
+		flowCtx, jr.desc.ColumnTypesWithMutations(returnMutations), len(columnIDs), spec.MaintainOrdering,
+		isGeo, geoIndex, geoType)
 	jr.batchSizeBytes = jr.strategy.getLookupRowsBatchSizeHint()
 
+	log.Errorf(context.TODO(), "joinReader %p: OnExpr: %s", jr, spec.OnExpr.Expr)
+	log.Errorf(context.TODO(), "joinReader: isGeo: %t, geoIndex: %d, geoType: %s", isGeo, geoIndex, geoType)
 	// TODO(radu): verify the input types match the index key types
 	return jr, nil
 }
 
 func (jr *joinReader) initJoinReaderStrategy(
-	flowCtx *execinfra.FlowCtx, typs []*types.T, numKeyCols int, maintainOrdering bool,
+	flowCtx *execinfra.FlowCtx,
+	typs []*types.T,
+	numKeyCols int,
+	maintainOrdering bool,
+	isGeo bool,
+	geoIndex int32,
+	geoType *types.T,
 ) {
 	spanBuilder := span.MakeBuilder(flowCtx.Codec(), &jr.desc, jr.index)
 	spanBuilder.SetNeededColumns(jr.neededRightCols())
@@ -201,6 +245,12 @@ func (jr *joinReader) initJoinReaderStrategy(
 			joinerBase:           &jr.joinerBase,
 			defaultSpanGenerator: spanGenerator,
 			isPartialJoin:        jr.joinType == sqlbase.LeftSemiJoin || jr.joinType == sqlbase.LeftAntiJoin,
+		}
+		if isGeo {
+			jr.strategy.(*joinReaderNoOrderingStrategy).geoIndex = geoIndex
+			jr.strategy.(*joinReaderNoOrderingStrategy).geoType = geoType
+		} else {
+			jr.strategy.(*joinReaderNoOrderingStrategy).geoIndex = -1
 		}
 		return
 	}
@@ -320,6 +370,15 @@ func (jr *joinReader) Next() (sqlbase.EncDatumRow, *execinfrapb.ProducerMetadata
 			return outRow, nil
 		}
 	}
+	log.Errorf(context.TODO(), "joinReader %p: input: %d, output: %d, out/in: %f",
+		jr, jr.inputRowCount, jr.outputRowCount, float64(jr.outputRowCount)/float64(jr.inputRowCount))
+	if jr.isGeo {
+		log.Errorf(context.TODO(),
+			"joinReader non-matching: NumGeometryRows: %d, NumInvertedIndexKeys: %d, Mean Cells: %f, Mean Area Ratio: %f, Num Bad Polys: %d",
+			geoindex.NumGeometryRows, geoindex.NumInvertedIndexKeys,
+			float64(geoindex.NumInvertedIndexKeys)/float64(geoindex.NumGeometryRows),
+			geoindex.SumAreaRatio/float64(geoindex.NumGeometryRows), geoindex.NumBadPolys)
+	}
 	return nil, jr.DrainHelper()
 }
 
@@ -340,6 +399,7 @@ func (jr *joinReader) readInput() (joinReaderState, *execinfrapb.ProducerMetadat
 		}
 		jr.curBatchSizeBytes += int64(row.Size())
 		jr.scratchInputRows = append(jr.scratchInputRows, jr.rowAlloc.CopyRow(row))
+		jr.inputRowCount++
 	}
 
 	if len(jr.scratchInputRows) == 0 {
@@ -426,6 +486,9 @@ func (jr *joinReader) emitRow() (
 	if err != nil {
 		jr.MoveToDraining(err)
 		return jrStateUnknown, nil, jr.DrainHelper()
+	}
+	if rowToEmit != nil {
+		jr.outputRowCount++
 	}
 	return nextState, rowToEmit, nil
 }

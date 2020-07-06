@@ -13,11 +13,13 @@ package rowexec
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowcontainer"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/span"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -147,6 +149,9 @@ type joinReaderNoOrderingStrategy struct {
 		matchingInputRowIndices       []int
 		lookedUpRow                   sqlbase.EncDatumRow
 	}
+	geoIndex    int32
+	geoType     *types.T
+	geoInvIndex geoindex.GeometryIndex
 }
 
 // getLookupRowsBatchSizeHint returns the batch size for the join reader no
@@ -199,7 +204,7 @@ func (s *joinReaderNoOrderingStrategy) processLookedUpRow(
 func (s *joinReaderNoOrderingStrategy) prepareToEmit(ctx context.Context) {}
 
 func (s *joinReaderNoOrderingStrategy) nextRowToEmit(
-	_ context.Context,
+	ctx context.Context,
 ) (sqlbase.EncDatumRow, joinReaderState, error) {
 	if !s.emitState.processingLookupRow {
 		// processLookedUpRow was not called before nextRowToEmit, which means that
@@ -245,6 +250,27 @@ func (s *joinReaderNoOrderingStrategy) nextRowToEmit(
 		}
 		if outputRow == nil {
 			// This row failed the ON condition, so it remains unmatched.
+			if s.geoIndex >= 0 {
+				// Decode
+				geoRow := sqlbase.EncDatumRow{s.emitState.lookedUpRow[s.geoIndex]}
+				geoRowType := []*types.T{s.geoType}
+				decodedRow := make([]tree.Datum, 1)
+				if err := sqlbase.EncDatumRowToDatums(geoRowType, decodedRow, geoRow, &sqlbase.DatumAlloc{}); err != nil {
+					panic(err)
+				}
+				// This geometry did not match
+				if s.geoType.InternalType.Family == types.GeometryFamily {
+					if s.geoInvIndex == nil {
+						// Construct it
+						s.geoInvIndex = geoindex.NewS2GeometryIndex(*geoindex.DefaultGeometryIndexConfig().S2Geometry)
+					}
+					log.Errorf(ctx, "non-matching geometry")
+					if _, err := s.geoInvIndex.InvertedIndexKeys(
+						ctx, decodedRow[0].(*tree.DGeometry).Geometry); err != nil {
+						panic(err)
+					}
+				}
+			}
 			continue
 		}
 

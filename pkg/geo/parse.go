@@ -50,7 +50,7 @@ func parseAmbiguousText(
 
 	switch str[0] {
 	case '0':
-		return parseEWKBHex(soType, str, defaultSRID)
+		return ParseEWKBHex(soType, str, defaultSRID)
 	case 0x00, 0x01:
 		return parseEWKB(soType, []byte(str), defaultSRID, DefaultSRIDIsHint)
 	case '{':
@@ -62,7 +62,7 @@ func parseAmbiguousText(
 
 // parseEWKBHex takes a given str assumed to be in EWKB hex and transforms it
 // into a SpatialObject.
-func parseEWKBHex(
+func ParseEWKBHex(
 	soType geopb.SpatialObjectType, str string, defaultSRID geopb.SRID,
 ) (geopb.SpatialObject, error) {
 	t, err := ewkbhex.Decode(str)
