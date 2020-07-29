@@ -11,6 +11,8 @@
 package invertedexpr
 
 import (
+	"math"
+
 	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -28,14 +30,24 @@ import (
 // TODO(sumeer): change geoindex to produce SpanExpressions directly.
 
 func geoKeyToEncInvertedVal(k geoindex.Key, end bool) EncInvertedVal {
-	dint := tree.DInt(k)
+	isMax := k == math.MaxUint64
+	if !end || isMax {
+		dint := tree.DInt(k)
+		encoded, err := sqlbase.EncodeTableKey(nil, &dint, encoding.Ascending)
+		if err != nil {
+			panic(errors.NewAssertionErrorWithWrappedErrf(err, "unexpected encoding error: %d", k))
+		}
+		if end {
+			// geoindex.KeySpan.End is inclusive, while InvertedSpan.end is exclusive.
+			encoded = roachpb.Key(encoded).PrefixEnd()
+		}
+		return encoded
+	}
+	// end && !isMax
+	dint := tree.DInt(k + 1)
 	encoded, err := sqlbase.EncodeTableKey(nil, &dint, encoding.Ascending)
 	if err != nil {
 		panic(errors.NewAssertionErrorWithWrappedErrf(err, "unexpected encoding error: %d", k))
-	}
-	if end {
-		// geoindex.KeySpan.End is inclusive, while InvertedSpan.end is exclusive.
-		encoded = roachpb.Key(encoded).PrefixEnd()
 	}
 	return encoded
 }

@@ -12,12 +12,16 @@ package geoindex
 
 import (
 	"context"
+	"fmt"
+	"math"
+	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geomfn"
 	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/geo/geoprojbase"
 	"github.com/cockroachdb/cockroach/pkg/geo/geos"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/golang/geo/r3"
 	"github.com/golang/geo/s2"
@@ -95,6 +99,22 @@ func GeometryIndexConfigForSRID(srid geopb.SRID) (*Config, error) {
 	if maxY-minY < 1 {
 		maxY++
 	}
+	// We are covering shapes using cells that are square. If we have shapes
+	// that start of as well-behaved wrt square cells, we do not wish to
+	// distort them significantly. Hence, we equalize MaxX-MinX and MaxY-MinY
+	// in the index bounds.
+	diffX := maxX - minX
+	diffY := maxY - minY
+	if diffX > diffY {
+		adjustment := (diffX - diffY) / 2
+		minY -= adjustment
+		maxY += adjustment
+	} else {
+		adjustment := (diffY - diffX) / 2
+		minX -= adjustment
+		maxX += adjustment
+	}
+
 	// Expand the bounds by 2x the clippingBoundsDelta, to
 	// ensure that shapes touching the bounds don't get
 	// clipped.
@@ -103,10 +123,16 @@ func GeometryIndexConfigForSRID(srid geopb.SRID) (*Config, error) {
 	deltaY := (maxY - minY) * boundsExpansion
 	return &Config{
 		S2Geometry: &S2GeometryConfig{
-			MinX:     minX - deltaX,
-			MaxX:     maxX + deltaX,
-			MinY:     minY - deltaY,
-			MaxY:     maxY + deltaY,
+			MinX: minX - deltaX,
+			MaxX: maxX + deltaX,
+			MinY: minY - deltaY,
+			MaxY: maxY + deltaY,
+			/*
+				MinX:     -9102387,
+				MaxX:     11819889,
+				MinY:     680961,
+				MaxY:     9646533,
+			*/
 			S2Config: defaultS2Config()},
 	}, nil
 }
@@ -114,6 +140,26 @@ func GeometryIndexConfigForSRID(srid geopb.SRID) (*Config, error) {
 // A cell id unused by S2. We use it to index geometries that exceed the
 // configured bounds.
 const exceedsBoundsCellID = s2.CellID(^uint64(0))
+
+var NumInvertedIndexKeys int64
+var NumGeometryRows int64
+var SumTightness float64
+var SumBBoxTightness float64
+var NumPoorTightness int64
+var NumBadPolys int64
+var NumFixedBadCoverings int64
+var MinCellLevel int
+var MaxCellLevel int
+var CellLevelToCount [32]int
+
+func keysToArea(keys []Key) float64 {
+	var cu s2.CellUnion
+	for _, k := range keys {
+		cu = append(cu, s2.CellID(k))
+	}
+	cu.Normalize()
+	return cu.ExactArea()
+}
 
 // TODO(sumeer): adjust code to handle precision issues with floating point
 // arithmetic.
@@ -140,6 +186,7 @@ func (rc covererWithBBoxFallback) covering(regions []s2.Region) s2.CellUnion {
 		bboxRegions := rc.s.s2RegionsFromPlanarGeomT(bboxT)
 		bboxCU := simpleCovererImpl{rc: rc.s.rc}.covering(bboxRegions)
 		if !isBadCovering(bboxCU) {
+			NumFixedBadCoverings++
 			cu = bboxCU
 		}
 	}
@@ -158,6 +205,20 @@ func isBadCovering(cu s2.CellUnion) bool {
 
 // InvertedIndexKeys implements the GeometryIndex interface.
 func (s *s2GeometryIndex) InvertedIndexKeys(c context.Context, g *geo.Geometry) ([]Key, error) {
+	{
+		// Log the WKB hex so we can match geometries seen by the query with what happened when
+		// indexing the geometry by doing WKB hex string comparisons.
+		wkb, err := geo.SpatialObjectToWKBHex(g.SpatialObject())
+		if err != nil {
+			panic(err)
+		}
+		log.Errorf(c, "wkbhex: %s", wkb)
+		ewkt, err := geo.SpatialObjectToEWKT(g.SpatialObject(), 2)
+		if err != nil {
+			panic(err)
+		}
+		log.Errorf(c, "ewkt: %s", ewkt)
+	}
 	// If the geometry exceeds the bounds, we index the clipped geometry in
 	// addition to the special cell, so that queries for geometries that don't
 	// exceed the bounds don't need to query the special cell (which would
@@ -167,9 +228,80 @@ func (s *s2GeometryIndex) InvertedIndexKeys(c context.Context, g *geo.Geometry) 
 		return nil, err
 	}
 	var keys []Key
+	var regionArea, coveringArea float64
+	var tightness float64
+	var bboxTightness float64
+	var badPoly bool
 	if gt != nil {
+		gtArea := areaOfPlanarGeomT(gt)
+		gtBboxArea := areaofPlanarGeomTBBox(gt)
+		// log.Errorf(c, "gtArea: %f, gtBboxArea: %f", gtArea, gtBboxArea)
+		if gtArea > 0 {
+			bboxTightness = gtBboxArea / gtArea
+		}
 		r := s.s2RegionsFromPlanarGeomT(gt)
+		for _, region := range r {
+			polygon, ok := region.(*s2.Polygon)
+			if ok {
+				regionArea += polygon.Area()
+			}
+		}
 		keys = invertedIndexKeys(c, covererWithBBoxFallback{s: s, geom: gt}, r)
+		// keys = invertedIndexKeys(c, simpleCovererImpl{rc: s.rc}, r)
+		for _, k := range keys {
+			level := s2.CellID(k).Level()
+			if level == 0 {
+				NumBadPolys++
+				badPoly = true
+				break
+			}
+			CellLevelToCount[level]++
+			if level > MaxCellLevel {
+				MaxCellLevel = level
+			}
+			if level < MinCellLevel {
+				MinCellLevel = level
+			}
+		}
+		coveringArea = keysToArea(keys)
+		if regionArea > 0 {
+			tightness = coveringArea / regionArea
+		}
+		if tightness > 4 {
+			NumPoorTightness++
+		}
+	}
+	{
+		// wkt, err := geo.SpatialObjectToWKT(g.SpatialObject(), 22)
+		// if err != nil {
+		//	panic(err)
+		// }
+		var b strings.Builder
+		for _, k := range keys {
+			fmt.Fprintf(&b, "%s,", k)
+		}
+		log.Errorf(c, "cells: %s", b.String())
+		log.Errorf(c, "index: bad: %t, tightness: %f, bbox tightness: %f, clipped: %t",
+			badPoly, tightness, bboxTightness, clipped)
+		SumTightness += tightness
+		SumBBoxTightness += bboxTightness
+		NumGeometryRows++
+		NumInvertedIndexKeys += int64(len(keys))
+		if NumGeometryRows%10000 == 0 {
+			var b strings.Builder
+			for level, count := range CellLevelToCount {
+				fmt.Fprintf(&b, "L%d:%d,", level, count)
+			}
+			log.Errorf(c, "NumGeometryRows: %d, NumInvertedIndexKeys: %d, Mean Cells: %f, "+
+				"Mean Area Ratio: %f, Mean BBox Area Ratio: %f, NumPoorTightness: %d, NumBadPolys: %d, "+
+				"NumFixedBadCoverings: %d, LevelToCount: %s",
+				NumGeometryRows, NumInvertedIndexKeys, float64(NumInvertedIndexKeys)/float64(NumGeometryRows),
+				SumTightness/float64(NumGeometryRows), SumBBoxTightness/float64(NumGeometryRows),
+				NumPoorTightness, NumBadPolys, NumFixedBadCoverings,
+				b.String())
+			log.Errorf(c, "index: minX: %f, minY: %f, maxX: %f, maxY: %f, deltaX: %f, deltaY: %f",
+				s.minX, s.minY, s.maxX, s.maxY, s.deltaX, s.deltaY)
+		}
 	}
 	if clipped {
 		keys = append(keys, Key(exceedsBoundsCellID))
@@ -205,6 +337,12 @@ func (s *s2GeometryIndex) CoveredBy(c context.Context, g *geo.Geometry) (RPKeyEx
 	return expr, nil
 }
 
+var IntersectsRows int64
+var IntersectsSumTightness float64
+var IntersectsSumBBoxTightness float64
+var IntersectsNumBadPolys int64
+var IntersectsClippedPolys int64
+
 // Intersects implements the GeometryIndex interface.
 func (s *s2GeometryIndex) Intersects(c context.Context, g *geo.Geometry) (UnionKeySpans, error) {
 	// If the geometry exceeds the bounds, we use the clipped geometry to
@@ -214,11 +352,23 @@ func (s *s2GeometryIndex) Intersects(c context.Context, g *geo.Geometry) (UnionK
 		return nil, err
 	}
 	var spans UnionKeySpans
+	points := 0
+	var bboxTightness float64
 	if gt != nil {
+		gtArea := areaOfPlanarGeomT(gt)
+		gtBboxArea := areaofPlanarGeomTBBox(gt)
+		if gtArea > 0 {
+			bboxTightness = gtBboxArea / gtArea
+		}
+		IntersectsSumBBoxTightness += bboxTightness
+		points = len(gt.FlatCoords()) / 2
 		r := s.s2RegionsFromPlanarGeomT(gt)
 		spans = intersects(c, covererWithBBoxFallback{s: s, geom: gt}, r)
 	}
 	if clipped {
+		IntersectsClippedPolys++
+		log.Errorf(c, "Intersects: clipped: %t, num points: %d, bbox tightness: %f",
+			clipped, points, bboxTightness)
 		// And lookup all shapes that exceed the bounds. The exceedsBoundsCellID is the largest
 		// possible key, so appending it maintains the sorted order of spans.
 		spans = append(spans, KeySpan{Start: Key(exceedsBoundsCellID), End: Key(exceedsBoundsCellID)})
@@ -369,6 +519,47 @@ func (s *s2GeometryIndex) planarPointToS2Point(x float64, y float64) s2.Point {
 	u := stToUV(ss)
 	v := stToUV(tt)
 	return face0UVToXYZPoint(u, v)
+}
+
+func areaofPlanarGeomTBBox(geomRepr geom.T) float64 {
+	bbox := geo.BoundingBoxFromGeomTGeometryType(geomRepr)
+	if bbox == nil {
+		return 0
+	}
+	area := (bbox.HiY - bbox.LoY) * (bbox.HiX - bbox.LoX)
+	if area < 0 {
+		log.Errorf(context.Background(), "negative area: %f", area)
+		area = 0
+	}
+	return area
+}
+
+func areaOfPlanarGeomT(geomRepr geom.T) float64 {
+	if geomRepr.Empty() {
+		return 0
+	}
+	var area float64
+	switch repr := geomRepr.(type) {
+	case *geom.Point:
+		return 0
+	case *geom.LineString:
+		return 0
+	case *geom.Polygon:
+		return math.Abs(repr.Area())
+	case *geom.GeometryCollection:
+		for _, geom := range repr.Geoms() {
+			area += areaOfPlanarGeomT(geom)
+		}
+	case *geom.MultiPoint:
+		return 0
+	case *geom.MultiLineString:
+		return 0
+	case *geom.MultiPolygon:
+		for i := 0; i < repr.NumPolygons(); i++ {
+			area += math.Abs(repr.Polygon(i).Area())
+		}
+	}
+	return area
 }
 
 // TODO(sumeer): this is similar to S2RegionsFromGeomT() but needs to do

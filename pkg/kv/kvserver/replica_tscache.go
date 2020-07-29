@@ -44,6 +44,8 @@ func setTimestampCacheLowWaterMark(
 func (r *Replica) updateTimestampCache(
 	ctx context.Context, ba *roachpb.BatchRequest, br *roachpb.BatchResponse, pErr *roachpb.Error,
 ) {
+	log.Errorf(ctx, "updateTimestampCache: len(ba.Requests): %d", len(ba.Requests))
+	log.Errorf(ctx, "updateTimestampCache: ba.Header: %s", ba.Header)
 	if ba.ReadConsistency != roachpb.CONSISTENT {
 		// Inconsistent reads are excluded from the timestamp cache.
 		return
@@ -63,6 +65,8 @@ func (r *Replica) updateTimestampCache(
 	if ba.Txn != nil {
 		txnID = ba.Txn.ID
 	}
+	numScanRequests := 0
+	numSingleKeyScanRequests := 0
 	for i, union := range ba.Requests {
 		args := union.GetInner()
 		if !roachpb.UpdatesTimestampCache(args) {
@@ -159,6 +163,10 @@ func (r *Replica) updateTimestampCache(
 			}
 		case *roachpb.ScanRequest:
 			resp := br.Responses[i].GetInner().(*roachpb.ScanResponse)
+			numScanRequests++
+			if len(end) == 0 {
+				numSingleKeyScanRequests++
+			}
 			if resp.ResumeSpan != nil {
 				// Note that for forward scan, the resume span will start at
 				// the (last key read).Next(), which is actually the correct
@@ -211,6 +219,8 @@ func (r *Replica) updateTimestampCache(
 			addToTSCache(start, end, ts, txnID)
 		}
 	}
+	log.Errorf(ctx, "updateTimestampCache: numScanRequests: %d, numSingleKeyScanRequests: %d",
+		numScanRequests, numSingleKeyScanRequests)
 }
 
 // checkedTSCacheUpdate wraps tscache.Cache and asserts that any update to the

@@ -18,6 +18,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/sstable"
 )
 
 func init() {
@@ -52,6 +55,14 @@ func Scan(
 	case roachpb.BATCH_RESPONSE:
 		scanRes, err = storage.MVCCScanToBytes(
 			ctx, reader, args.Key, args.EndKey, h.Timestamp, opts)
+		log.Errorf(ctx, "pebble: Level Seeks: %d, Same File: %d, Same File Null Iter: %d, "+
+			"Different File: %d, Earlier File: %d, SLI-Seek: %d, SLI-Seek Same Block: %d, "+
+			"Avoided Loading Block: %d, Avoided Seek Within Block: %d",
+			pebble.MergingIterLevelSeekCount, pebble.LevelIterLoadFileSameFileCount,
+			pebble.LevelIterLoadFileSameFileButIterNullCount, pebble.LevelIterLoadFileDifferentFileCount,
+			pebble.LevelIterLoadFileEarlierFileCount, sstable.SingleLevelIterSeekCount,
+			sstable.SingleLevelIterSeekSameBlockCount, sstable.SingleLevelIterSeekAvoidedLoadingBlock,
+			sstable.SingleLevelIterSeekAvoidedBlockSeek)
 		if err != nil {
 			return result.Result{}, err
 		}

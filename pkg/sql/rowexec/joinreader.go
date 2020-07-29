@@ -13,7 +13,9 @@ package rowexec
 import (
 	"context"
 	"sort"
+	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
@@ -92,6 +94,13 @@ type joinReader struct {
 
 	// State variables for each batch of input rows.
 	scratchInputRows sqlbase.EncDatumRows
+
+	inputRowCount  int64
+	outputRowCount int64
+	isGeo          bool
+	geoColIndex    int32
+	geoType        *types.T
+	geoIndex       geoindex.GeometryIndex
 }
 
 var _ execinfra.Processor = &joinReader{}
@@ -240,8 +249,48 @@ func newJoinReader(
 		jr.fetcher = &fetcher
 	}
 
+	{
+		if strings.Contains(strings.ToLower(spec.OnExpr.Expr), "st_") {
+			jr.isGeo = true
+			jr.geoColIndex = -1
+			for i, t := range columnTypes {
+				if t.InternalType.Family == types.GeographyFamily || t.InternalType.Family == types.GeometryFamily {
+					jr.geoColIndex = int32(i)
+					jr.geoType = t
+					break
+				}
+			}
+			if jr.geoColIndex == -1 {
+				panic("geoIndex = -1")
+			}
+			if !neededRightCols.Contains(int(jr.geoColIndex)) {
+				panic(errors.Errorf("neededRightCols %s did not contain geoColIndex: %d", neededRightCols, jr.geoColIndex))
+			}
+			for _, indexDesc := range spec.Table.Indexes {
+				if indexDesc.GeoConfig.S2Geometry != nil {
+					jr.geoIndex = geoindex.NewS2GeometryIndex(*indexDesc.GeoConfig.S2Geometry)
+				}
+			}
+			if jr.geoIndex == nil {
+				panic("did not find geo index descriptor")
+			}
+			geoindex.NumInvertedIndexKeys = 0
+			geoindex.NumGeometryRows = 0
+			geoindex.SumTightness = 0
+			geoindex.SumBBoxTightness = 0
+			geoindex.NumPoorTightness = 0
+			geoindex.NumBadPolys = 0
+			geoindex.MinCellLevel = 100
+			geoindex.MaxCellLevel = 0
+		}
+		log.Errorf(context.TODO(), "joinReader %p: OnExpr: %s", jr, spec.OnExpr.Expr)
+		log.Errorf(context.TODO(), "joinReader: isGeo: %t, geoColIndex: %d, geoType: %s",
+			jr.isGeo, jr.geoColIndex, jr.geoType)
+	}
+
 	jr.initJoinReaderStrategy(flowCtx, columnTypes, len(columnIDs), spec.MaintainOrdering, rightCols, readerType)
 	jr.batchSizeBytes = jr.strategy.getLookupRowsBatchSizeHint()
+	log.Errorf(context.TODO(), "joinReader: batchSizeBytes: %d", jr.batchSizeBytes)
 
 	// TODO(radu): verify the input types match the index key types
 	return jr, nil
@@ -277,6 +326,13 @@ func (jr *joinReader) initJoinReaderStrategy(
 			joinerBase:           &jr.joinerBase,
 			defaultSpanGenerator: spanGenerator,
 			isPartialJoin:        jr.joinType == sqlbase.LeftSemiJoin || jr.joinType == sqlbase.LeftAntiJoin,
+		}
+		if jr.isGeo {
+			jr.strategy.(*joinReaderNoOrderingStrategy).geoColIndex = jr.geoColIndex
+			jr.strategy.(*joinReaderNoOrderingStrategy).geoType = jr.geoType
+			jr.strategy.(*joinReaderNoOrderingStrategy).geoInvIndex = jr.geoIndex
+			jr.strategy.(*joinReaderNoOrderingStrategy).nonMatchingEWKBToCount = make(map[string]int)
+			jr.strategy.(*joinReaderNoOrderingStrategy).allSpansToCount = make(map[string]int)
 		}
 		return
 	}
@@ -396,6 +452,46 @@ func (jr *joinReader) Next() (sqlbase.EncDatumRow, *execinfrapb.ProducerMetadata
 			return outRow, nil
 		}
 	}
+	log.Errorf(jr.Ctx, "joinReader %p: input: %d, output: %d, out/in: %f",
+		jr, jr.inputRowCount, jr.outputRowCount, float64(jr.outputRowCount)/float64(jr.inputRowCount))
+	if jr.isGeo {
+		log.Errorf(jr.Ctx,
+			"joinReader non-matching: NumGeometryRows: %d, NumInvertedIndexKeys: %d, Mean Cells: %f, "+
+				"Mean Tightness: %f, Mean BBox Tightness: %f, Num Bad Polys: %d, MinCellLevel: %d, MaxCellLevel: %d",
+			geoindex.NumGeometryRows, geoindex.NumInvertedIndexKeys,
+			float64(geoindex.NumInvertedIndexKeys)/float64(geoindex.NumGeometryRows),
+			geoindex.SumTightness/float64(geoindex.NumGeometryRows),
+			geoindex.SumBBoxTightness/float64(geoindex.NumGeometryRows),
+			geoindex.NumBadPolys, geoindex.MinCellLevel,
+			geoindex.MaxCellLevel)
+		ewkbToCount := jr.strategy.(*joinReaderNoOrderingStrategy).nonMatchingEWKBToCount
+		type ewkbCount struct {
+			ewkb  string
+			count int
+		}
+		var ewkbCounts []ewkbCount
+		totalCount := 0
+		for k, v := range ewkbToCount {
+			ewkbCounts = append(ewkbCounts, ewkbCount{
+				ewkb:  k,
+				count: v,
+			})
+			totalCount += v
+		}
+		sort.Slice(ewkbCounts, func(i, j int) bool {
+			return ewkbCounts[i].count > ewkbCounts[j].count
+		})
+		allSpansToCount := jr.strategy.(*joinReaderNoOrderingStrategy).allSpansToCount
+		allSpansTotalCount := 0
+		for _, v := range allSpansToCount {
+			allSpansTotalCount += v
+		}
+		log.Errorf(jr.Ctx, "joinReader num ewkbs: %d, totalCount: %d, num spans: %d, allSpansTotalCount: %d",
+			len(ewkbCounts), totalCount, len(allSpansToCount), allSpansTotalCount)
+		for i := 0; i < 10; i++ {
+			log.Errorf(jr.Ctx, "joinReader pos %d: count: %d, ewkb: %s", i, ewkbCounts[i].count, ewkbCounts[i].ewkb)
+		}
+	}
 	return nil, jr.DrainHelper()
 }
 
@@ -416,6 +512,7 @@ func (jr *joinReader) readInput() (joinReaderState, *execinfrapb.ProducerMetadat
 		}
 		jr.curBatchSizeBytes += int64(row.Size())
 		jr.scratchInputRows = append(jr.scratchInputRows, jr.rowAlloc.CopyRow(row))
+		jr.inputRowCount++
 	}
 
 	if len(jr.scratchInputRows) == 0 {
@@ -424,6 +521,7 @@ func (jr *joinReader) readInput() (joinReaderState, *execinfrapb.ProducerMetadat
 		jr.MoveToDraining(nil)
 		return jrStateUnknown, jr.DrainHelper()
 	}
+	log.Errorf(jr.Ctx, "joinReader read %d input rows", len(jr.scratchInputRows))
 	log.VEventf(jr.Ctx, 1, "read %d input rows", len(jr.scratchInputRows))
 
 	spans, err := jr.strategy.processLookupRows(jr.scratchInputRows)
@@ -444,8 +542,19 @@ func (jr *joinReader) readInput() (joinReaderState, *execinfrapb.ProducerMetadat
 		// restore the original order of the output during the output collection
 		// phase.
 		sort.Sort(spans)
+	} else {
+		seekBackCount := 0
+		for i := 1; i < len(spans); i++ {
+			if spans[i].Key.Compare(spans[i-1].Key) < 0 {
+				seekBackCount++
+			}
+		}
+		log.Errorf(jr.Ctx, "joinReader if did not sort spans: seekBackCount: %d, total: %d",
+			seekBackCount, len(spans))
+		sort.Sort(spans)
 	}
 	log.VEventf(jr.Ctx, 1, "scanning %d spans", len(spans))
+	log.Errorf(jr.Ctx, "joinReader scanning %d spans", len(spans))
 	if err := jr.fetcher.StartScan(
 		jr.Ctx, jr.FlowCtx.Txn, spans, jr.shouldLimitBatches, 0, /* limitHint */
 		jr.FlowCtx.TraceKV); err != nil {
@@ -505,6 +614,9 @@ func (jr *joinReader) emitRow() (
 	if err != nil {
 		jr.MoveToDraining(err)
 		return jrStateUnknown, nil, jr.DrainHelper()
+	}
+	if rowToEmit != nil {
+		jr.outputRowCount++
 	}
 	return nextState, rowToEmit, nil
 }

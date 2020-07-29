@@ -11,10 +11,12 @@
 package rowexec
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sort"
 
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
@@ -40,7 +42,7 @@ import (
 // higher scan throughput of larger batches and the cost of spilling the
 // scanned rows to disk. The spilling cost will probably be dominated by
 // the de-duping cost, since it incurs a read.
-const invertedJoinerBatchSize = 10
+const invertedJoinerBatchSize = 100
 
 // invertedJoinerState represents the state of the processor.
 type invertedJoinerState int
@@ -290,7 +292,11 @@ func newInvertedJoiner(
 		ij.diskMonitor,
 		0, /* rowCapacity */
 	)
-
+	geoindex.IntersectsRows = 0
+	geoindex.IntersectsSumTightness = 0
+	geoindex.IntersectsSumBBoxTightness = 0
+	geoindex.IntersectsClippedPolys = 0
+	geoindex.IntersectsNumBadPolys = 0
 	return ij, nil
 }
 
@@ -363,6 +369,13 @@ func (ij *invertedJoiner) Next() (sqlbase.EncDatumRow, *execinfrapb.ProducerMeta
 			return outRow, nil
 		}
 	}
+	log.Errorf(ij.Ctx,
+		"invertedJoiner: IntersectsRows: %d, Mean Tightness: %f, Mean BBox Tightness: %f, "+
+			"Num Bad Polys: %d, Clipped: %d",
+		geoindex.IntersectsRows,
+		geoindex.IntersectsSumTightness/float64(geoindex.IntersectsRows),
+		geoindex.IntersectsSumBBoxTightness/float64(geoindex.IntersectsRows),
+		geoindex.IntersectsNumBadPolys, geoindex.IntersectsClippedPolys)
 	return nil, ij.DrainHelper()
 }
 
@@ -413,6 +426,23 @@ func (ij *invertedJoiner) readInput() (invertedJoinerState, *execinfrapb.Produce
 	log.VEventf(ij.Ctx, 1, "read %d input rows", len(ij.inputRows))
 
 	spans := ij.batchedExprEval.init()
+	coalesce := 0
+	bad := 0
+	for i := 0; i < len(spans); i++ {
+		if i > 0 {
+			endStartCmp := bytes.Compare(spans[i-1].End, spans[i].Start)
+			if endStartCmp == 0 {
+				coalesce++
+			}
+			if endStartCmp > 0 {
+				bad++
+			}
+		}
+		startEndCmp := bytes.Compare(spans[i].Start, spans[i].End)
+		if startEndCmp >= 0 {
+			bad++
+		}
+	}
 	if len(spans) == 0 {
 		// Nothing to scan. For each input row, place a nil slice in the joined
 		// rows, for emitRow() to process.
@@ -431,6 +461,8 @@ func (ij *invertedJoiner) readInput() (invertedJoinerState, *execinfrapb.Produce
 	// Sort the spans for locality of reads.
 	sort.Sort(indexSpans)
 	log.VEventf(ij.Ctx, 1, "scanning %d spans", len(indexSpans))
+	log.Errorf(ij.Ctx, "invertedJoiner: scanning %d spans for %d input rows, coalesce: %d, bad: %d",
+		len(indexSpans), len(ij.inputRows), coalesce, bad)
 	if err = ij.fetcher.StartScan(
 		ij.Ctx, ij.FlowCtx.Txn, indexSpans, false /* limitBatches */, 0, /* limitHint */
 		ij.FlowCtx.TraceKV); err != nil {

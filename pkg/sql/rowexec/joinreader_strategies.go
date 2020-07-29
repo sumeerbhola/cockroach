@@ -13,11 +13,14 @@ package rowexec
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/geo"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowcontainer"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/span"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -64,7 +67,9 @@ func (g *defaultSpanGenerator) hasNullLookupColumn(row sqlbase.EncDatumRow) bool
 	return false
 }
 
-func (g *defaultSpanGenerator) generateSpans(rows []sqlbase.EncDatumRow) (roachpb.Spans, error) {
+func (g *defaultSpanGenerator) generateSpans(
+	rows []sqlbase.EncDatumRow, debugMap map[string]int,
+) (roachpb.Spans, error) {
 	// This loop gets optimized to a runtime.mapclear call.
 	for k := range g.keyToInputRowIndices {
 		delete(g.keyToInputRowIndices, k)
@@ -81,6 +86,9 @@ func (g *defaultSpanGenerator) generateSpans(rows []sqlbase.EncDatumRow) (roachp
 			return nil, err
 		}
 		inputRowIndices := g.keyToInputRowIndices[string(generatedSpan.Key)]
+		if debugMap != nil {
+			debugMap[string(generatedSpan.Key)]++
+		}
 		if inputRowIndices == nil {
 			g.scratchSpans = g.spanBuilder.MaybeSplitSpanIntoSeparateFamilies(
 				g.scratchSpans, generatedSpan, len(g.lookupCols), containsNull)
@@ -147,6 +155,11 @@ type joinReaderNoOrderingStrategy struct {
 		matchingInputRowIndices       []int
 		lookedUpRow                   sqlbase.EncDatumRow
 	}
+	geoColIndex            int32
+	geoType                *types.T
+	geoInvIndex            geoindex.GeometryIndex
+	nonMatchingEWKBToCount map[string]int
+	allSpansToCount        map[string]int
 }
 
 // getLookupRowsBatchSizeHint returns the batch size for the join reader no
@@ -170,7 +183,8 @@ func (s *joinReaderNoOrderingStrategy) processLookupRows(
 			s.matched[i] = false
 		}
 	}
-	return s.generateSpans(s.inputRows)
+	spans, err := s.generateSpans(s.inputRows, s.allSpansToCount)
+	return spans, err
 }
 
 func (s *joinReaderNoOrderingStrategy) processLookedUpRow(
@@ -199,7 +213,7 @@ func (s *joinReaderNoOrderingStrategy) processLookedUpRow(
 func (s *joinReaderNoOrderingStrategy) prepareToEmit(ctx context.Context) {}
 
 func (s *joinReaderNoOrderingStrategy) nextRowToEmit(
-	_ context.Context,
+	ctx context.Context,
 ) (sqlbase.EncDatumRow, joinReaderState, error) {
 	if !s.emitState.processingLookupRow {
 		// processLookedUpRow was not called before nextRowToEmit, which means that
@@ -245,6 +259,28 @@ func (s *joinReaderNoOrderingStrategy) nextRowToEmit(
 		}
 		if outputRow == nil {
 			// This row failed the ON condition, so it remains unmatched.
+			if s.geoType != nil {
+				// Decode
+				geoRow := sqlbase.EncDatumRow{s.emitState.lookedUpRow[s.geoColIndex]}
+				geoRowType := []*types.T{s.geoType}
+				decodedRow := make([]tree.Datum, 1)
+				if err := sqlbase.EncDatumRowToDatums(geoRowType, decodedRow, geoRow, &sqlbase.DatumAlloc{}); err != nil {
+					panic(err)
+				}
+				// This geometry did not match
+				if s.geoType.InternalType.Family == types.GeometryFamily {
+					log.Errorf(ctx, "non-matching geometry")
+					g := decodedRow[0].(*tree.DGeometry).Geometry
+					if _, err := s.geoInvIndex.InvertedIndexKeys(ctx, g); err != nil {
+						panic(err)
+					}
+					wkb, err := geo.SpatialObjectToWKBHex(g.SpatialObject())
+					if err != nil {
+						panic(err)
+					}
+					s.nonMatchingEWKBToCount[wkb]++
+				}
+			}
 			continue
 		}
 
@@ -303,7 +339,7 @@ func (s *joinReaderIndexJoinStrategy) processLookupRows(
 	rows []sqlbase.EncDatumRow,
 ) (roachpb.Spans, error) {
 	s.inputRows = rows
-	return s.generateSpans(s.inputRows)
+	return s.generateSpans(s.inputRows, nil)
 }
 
 func (s *joinReaderIndexJoinStrategy) processLookedUpRow(
@@ -397,7 +433,7 @@ func (s *joinReaderOrderingStrategy) processLookupRows(
 	}
 
 	s.inputRows = rows
-	return s.generateSpans(s.inputRows)
+	return s.generateSpans(s.inputRows, nil)
 }
 
 func (s *joinReaderOrderingStrategy) processLookedUpRow(

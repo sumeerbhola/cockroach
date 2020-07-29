@@ -12,9 +12,19 @@ package rowexec
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"sort"
+	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/invertedexpr"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlbase"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/encoding"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/golang/geo/s2"
 )
 
 // The abstractions in this file help with evaluating (batches of)
@@ -410,7 +420,63 @@ func (b *batchedInvertedExprEvaluator) init() []invertedSpan {
 	}
 	b.fragmentPendingSpans(nil)
 	coveringSpans = append(coveringSpans, currentCoveringSpan)
+	debugCoveringSpans(coveringSpans)
 	return coveringSpans
+}
+
+func debugCoveringSpans(spans []invertedSpan) {
+	type intSpan struct {
+		start uint64
+		end   uint64
+	}
+	var intSpans []intSpan
+	alloc := &sqlbase.DatumAlloc{}
+	typ := types.Int
+	errCount := 0
+	for _, span := range spans {
+		datumS, _, err := sqlbase.DecodeTableKey(alloc, typ, span.Start, encoding.Ascending)
+		if err != nil {
+			errCount++
+			continue
+		}
+		datumE, _, err := sqlbase.DecodeTableKey(alloc, typ, span.End, encoding.Ascending)
+		if err != nil {
+			errCount++
+			continue
+		}
+		intSpans = append(intSpans, intSpan{
+			start: uint64(*datumS.(*tree.DInt)),
+			end:   uint64(*datumE.(*tree.DInt)),
+		})
+	}
+	adjacent := 0
+	overlapping := 0
+	singleton := 0
+	var levelCount [32]int
+	for i := range intSpans {
+		if i > 0 {
+			if intSpans[i].start < intSpans[i-1].end {
+				overlapping++
+			} else if intSpans[i].start == intSpans[i-1].end {
+				adjacent++
+			}
+		}
+		if (intSpans[i].start + 1) == intSpans[i].end {
+			singleton++
+			levelCount[s2.CellID(intSpans[i].start).Level()]++
+		} else {
+			log.Errorf(context.Background(), "non-singleton span: [%s, %s), [%s, %s)",
+				geoindex.Key(intSpans[i].start), geoindex.Key(intSpans[i].end),
+				intSpans[i].start, intSpans[i].end)
+		}
+	}
+	var b strings.Builder
+	for level, count := range levelCount {
+		fmt.Fprintf(&b, "L%d:%d,", level, count)
+	}
+	log.Errorf(context.Background(),
+		"EvalSpans: total: %d, errCount: %d, adjacent: %d, overlapping: %d, singleton: %d, level count: %s",
+		len(spans), errCount, adjacent, overlapping, singleton, b.String())
 }
 
 // TODO(sumeer): if this will be called in non-decreasing order of enc,

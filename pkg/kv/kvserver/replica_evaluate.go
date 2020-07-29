@@ -164,7 +164,7 @@ func evaluateBatch(
 	baReqs := ba.Requests
 	baHeader := ba.Header
 	br := ba.CreateReply()
-
+	log.Errorf(ctx, "evaluateBatch: baReqs: %d", len(baReqs))
 	// Optimize any contiguous sequences of put and conditional put ops.
 	if len(baReqs) >= optimizePutThreshold && !readOnly {
 		baReqs = optimizePuts(readWriter, baReqs, baHeader.DistinctSpans)
@@ -228,9 +228,25 @@ func evaluateBatch(
 		writeTooOldState.initialTxnStatus = baHeader.Txn.Status
 	}
 
+	outOfOrderCount := 0
+	equalCount := 0
+	var prevArgs roachpb.Request
 	for index, union := range baReqs {
 		// Execute the command.
 		args := union.GetInner()
+		if index > 0 {
+			currScan, currOk := args.(*roachpb.ScanRequest)
+			prevScan, prevOk := prevArgs.(*roachpb.ScanRequest)
+			if currOk && prevOk {
+				cmp := currScan.Key.Compare(prevScan.Key)
+				if cmp < 0 {
+					outOfOrderCount++
+				} else if cmp == 0 {
+					equalCount++
+				}
+			}
+		}
+		prevArgs = args
 
 		if baHeader.Txn != nil {
 			// Set the Request's sequence number on the TxnMeta for this
@@ -400,6 +416,7 @@ func evaluateBatch(
 			}
 		}
 	}
+	log.Errorf(ctx, "evaluateBatch: outOfOrderCount: %d, equalCount: %d", outOfOrderCount, equalCount)
 
 	if writeTooOldState.err != nil {
 		if baHeader.Txn != nil && baHeader.Txn.Status.IsCommittedOrStaging() {

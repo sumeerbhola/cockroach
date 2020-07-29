@@ -19,6 +19,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geogfn"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/golang/geo/s2"
 )
 
@@ -378,7 +379,15 @@ func (rc simpleCovererImpl) covering(regions []s2.Region) s2.CellUnion {
 	// to respect the index configuration.
 	var u s2.CellUnion
 	for _, r := range regions {
-		u = append(u, rc.rc.Covering(r)...)
+		covering := rc.rc.Covering(r)
+		for _, c := range covering {
+			/*
+				if c.Level() > rc.rc.MaxLevel {
+					c = c.Parent(rc.rc.MaxLevel)
+				}
+			*/
+			u = append(u, c)
+		}
 	}
 	// Ensure the cells are non-overlapping.
 	u.Normalize()
@@ -530,17 +539,59 @@ func covers(c context.Context, rc covererInterface, r []s2.Region) UnionKeySpans
 
 // Helper for Intersects. Returns spans in sorted order for convenience of
 // scans.
-func intersects(_ context.Context, rc covererInterface, r []s2.Region) UnionKeySpans {
+func intersects(c context.Context, rc covererInterface, r []s2.Region) UnionKeySpans {
 	covering := rc.covering(r)
+	var regionArea, coveringArea float64
+	var tightness float64
+	var badPoly bool
+	for _, region := range r {
+		polygon, ok := region.(*s2.Polygon)
+		if ok {
+			regionArea += polygon.Area()
+		}
+	}
+	coveringArea = covering.ExactArea()
+	if regionArea > 0 {
+		tightness = coveringArea / regionArea
+	}
+	for _, cell := range covering {
+		if cell.Level() == 0 {
+			badPoly = true
+		}
+	}
+	if badPoly {
+		IntersectsNumBadPolys++
+	}
+	IntersectsRows++
+	IntersectsSumTightness += tightness
+	log.Errorf(c, "intersects: tightness: %f, badPoly: %t", tightness, badPoly)
 	return intersectsUsingCovering(covering)
 }
 
 func intersectsUsingCovering(covering s2.CellUnion) UnionKeySpans {
+	var b strings.Builder
+	for _, k := range covering {
+		fmt.Fprintf(&b, "%s,", Key(k))
+	}
+	log.Errorf(context.Background(), "intersects cells: %s", b.String())
 	querySpans := make([]KeySpan, len(covering))
 	for i, cid := range covering {
 		querySpans[i] = KeySpan{Start: Key(cid.RangeMin()), End: Key(cid.RangeMax())}
+		log.Errorf(context.Background(), "intersects range: [%s, %s]",
+			querySpans[i].Start, querySpans[i].End)
 	}
-	for _, cid := range ancestorCells(covering) {
+	ancestors := ancestorCells(covering)
+	/*
+		var i int
+		for _, k := range ancestors {
+			if k.Level() >= 11 && k.Level() <= 17 {
+				ancestors[i] = k
+				i++
+			}
+		}
+		ancestors = ancestors[:i]
+	*/
+	for _, cid := range ancestors {
 		querySpans = append(querySpans, KeySpan{Start: Key(cid), End: Key(cid)})
 	}
 	sort.Slice(querySpans, func(i, j int) bool { return querySpans[i].Start < querySpans[j].Start })
@@ -690,7 +741,7 @@ func (b *stringBuilderWithWrap) doWrap() {
 func defaultS2Config() *S2Config {
 	return &S2Config{
 		MinLevel: 0,
-		MaxLevel: 30,
+		MaxLevel: 21,
 		LevelMod: 1,
 		MaxCells: 4,
 	}

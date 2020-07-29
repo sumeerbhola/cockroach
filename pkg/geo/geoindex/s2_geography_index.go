@@ -12,10 +12,13 @@ package geoindex
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geogfn"
 	"github.com/cockroachdb/cockroach/pkg/geo/geoprojbase"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/golang/geo/s1"
 	"github.com/golang/geo/s2"
@@ -89,8 +92,11 @@ func (i *s2GeographyIndex) Intersects(c context.Context, g *geo.Geography) (Unio
 	return intersects(c, simpleCovererImpl{rc: i.rc}, r), nil
 }
 
+var GeogDWithinNum int64
+var GeogDWithinTightness float64
+
 func (i *s2GeographyIndex) DWithin(
-	_ context.Context,
+	ctx context.Context,
 	g *geo.Geography,
 	distanceMeters float64,
 	useSphereOrSpheroid geogfn.UseSphereOrSpheroid,
@@ -138,6 +144,18 @@ func (i *s2GeographyIndex) DWithin(
 		covering = append(covering, c)
 	}
 	covering.Normalize()
+	coveringArea := covering.ExactArea() * (projInfo.Spheroid.Radius * projInfo.Spheroid.Radius)
+	area := s2.CapFromCenterAngle(s2.PointFromCoords(1.0, 0, 0), angle).Area() * (projInfo.Spheroid.Radius * projInfo.Spheroid.Radius)
+	tightness := coveringArea / area
+	var b strings.Builder
+	for _, k := range covering {
+		fmt.Fprintf(&b, "%s,", Key(k))
+	}
+	log.Errorf(ctx, "DWithin: coveringArea: %f, area: %f, tightness: %f, cells: %s",
+		coveringArea, area, tightness, b.String())
+	GeogDWithinNum++
+	GeogDWithinTightness += tightness
+
 	return intersectsUsingCovering(covering), nil
 }
 

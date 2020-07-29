@@ -270,7 +270,8 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 			// Handle load-based splitting.
 			r.recordBatchForLoadBasedSplitting(ctx, ba, latchSpans)
 		}
-
+		log.Errorf(ctx, "executeBatchWithConcurrencyRetries: latchSpans: %d, lockSpans: %d",
+			latchSpans.Len(), lockSpans.Len())
 		// Acquire latches to prevent overlapping requests from executing until
 		// this request completes. After latching, wait on any conflicting locks
 		// to ensure that the request has full isolation during evaluation. This
@@ -651,6 +652,8 @@ func (r *Replica) collectSpans(
 		}
 	}
 
+	log.Errorf(context.Background(), "collectSpans: pre-sort and dedup latchSpans: %d, lockSpans: %d",
+		latchSpans.Len(), lockSpans.Len())
 	// Commands may create a large number of duplicate spans. De-duplicate
 	// them to reduce the number of spans we pass to the spanlatch manager.
 	for _, s := range [...]*spanset.SpanSet{latchSpans, lockSpans} {
