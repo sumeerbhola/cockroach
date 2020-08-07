@@ -2005,6 +2005,7 @@ message Header {
   // TODO(nvanbenschoten): perform this migration.
   bool can_forward_read_timestamp = 16;
   reserved 7, 12, 14;
+  bool index_join_spans = 18;
 }
 
 // ClientRangeInfo represents the kvclient's knowledge about the state of the

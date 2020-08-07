@@ -63,6 +63,22 @@ func (r *Replica) updateTimestampCache(
 	if ba.Txn != nil {
 		txnID = ba.Txn.ID
 	}
+	if ba.IndexJoinSpans {
+		length := len(ba.Requests)
+		log.Errorf(ctx, "updateTimestampCache: %d, making sparse", length)
+		for i := 0; i < length; i += 10 {
+			args := ba.Requests[i].GetInner()
+			header := args.Header()
+			start := header.Key
+			endIndex := i + 9
+			if endIndex >= length {
+				endIndex = length - 1
+			}
+			end := ba.Requests[endIndex].GetInner().Header().EndKey
+			addToTSCache(start, end, ts, txnID)
+		}
+		return
+	}
 	for i, union := range ba.Requests {
 		args := union.GetInner()
 		if !roachpb.UpdatesTimestampCache(args) {

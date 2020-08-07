@@ -80,12 +80,21 @@ func (g *defaultSpanGenerator) generateSpans(rows []sqlbase.EncDatumRow) (roachp
 		if err != nil {
 			return nil, err
 		}
-		inputRowIndices := g.keyToInputRowIndices[string(generatedSpan.Key)]
-		if inputRowIndices == nil {
+		if g.keyToInputRowIndices == nil {
+			// Index join. keyToInputRowIndices updates consume 1.1% of cpu in
+			// an example geospatial query with 8000 spans, and we don't need them
+			// for index joins (common in geospatial queries after using the
+			// inverted index).
 			g.scratchSpans = g.spanBuilder.MaybeSplitSpanIntoSeparateFamilies(
 				g.scratchSpans, generatedSpan, len(g.lookupCols), containsNull)
+		} else {
+			inputRowIndices := g.keyToInputRowIndices[string(generatedSpan.Key)]
+			if inputRowIndices == nil {
+				g.scratchSpans = g.spanBuilder.MaybeSplitSpanIntoSeparateFamilies(
+					g.scratchSpans, generatedSpan, len(g.lookupCols), containsNull)
+			}
+			g.keyToInputRowIndices[string(generatedSpan.Key)] = append(inputRowIndices, i)
 		}
-		g.keyToInputRowIndices[string(generatedSpan.Key)] = append(inputRowIndices, i)
 	}
 	return g.scratchSpans, nil
 }
@@ -307,7 +316,7 @@ func (s *joinReaderIndexJoinStrategy) processLookupRows(
 }
 
 func (s *joinReaderIndexJoinStrategy) processLookedUpRow(
-	ctx context.Context, row sqlbase.EncDatumRow, key roachpb.Key,
+	_ context.Context, row sqlbase.EncDatumRow, _ roachpb.Key,
 ) (joinReaderState, error) {
 	s.emitState.processingLookupRow = true
 	s.emitState.lookedUpRow = row

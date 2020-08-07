@@ -50,6 +50,17 @@ func Scan(
 
 	switch args.ScanFormat {
 	case roachpb.BATCH_RESPONSE:
+		/*
+			if h.IndexJoinSpans {
+				log.Errorf(ctx, "key: %s, endkey: %s", args.Key, args.EndKey)
+				scanRes, err = storage.MVCCPrefixScanToBytesHack(
+					ctx, reader, args.Key, args.EndKey, h.Timestamp, opts)
+			} else {
+				scanRes, err = storage.MVCCScanToBytes(
+					ctx, reader, args.Key, args.EndKey, h.Timestamp, opts)
+			}
+
+		*/
 		scanRes, err = storage.MVCCScanToBytes(
 			ctx, reader, args.Key, args.EndKey, h.Timestamp, opts)
 		if err != nil {

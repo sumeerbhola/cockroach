@@ -13,7 +13,6 @@ package rowexec
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
@@ -429,8 +428,9 @@ func (ij *invertedJoiner) readInput() (invertedJoinerState, *execinfrapb.Produce
 		return ijStateUnknown, ij.DrainHelper()
 	}
 
+	// Already sorted. This was consuming 1% of cpu on queries with large numbers of spans.
 	// Sort the spans for locality of reads.
-	sort.Sort(indexSpans)
+	// sort.Sort(indexSpans)
 	log.VEventf(ij.Ctx, 1, "scanning %d spans", len(indexSpans))
 	if err = ij.fetcher.StartScan(
 		ij.Ctx, ij.FlowCtx.Txn, indexSpans, false /* limitBatches */, 0, /* limitHint */

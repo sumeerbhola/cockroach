@@ -233,6 +233,8 @@ type Fetcher struct {
 
 	// Buffered allocation of decoded datums.
 	alloc *sqlbase.DatumAlloc
+
+	IsIndexJoin bool
 }
 
 // Reset resets this Fetcher, preserving the memory capacity that was used
@@ -490,6 +492,7 @@ func (rf *Fetcher) StartScan(
 		rf.firstBatchLimit(limitHint),
 		rf.lockStr,
 	)
+	f.IsIndexJoin = rf.IsIndexJoin
 	if err != nil {
 		return err
 	}

@@ -84,6 +84,31 @@ type SpanSet struct {
 	spans [NumSpanAccess][NumSpanScope][]Span
 }
 
+func (s *SpanSet) MakeGlobalReadOnlySparse() {
+	j := 0
+	length := len(s.spans[SpanReadOnly][SpanGlobal])
+	for i := 0; i < length; i += 10 {
+		start := s.spans[SpanReadOnly][SpanGlobal][i].Key
+		var end roachpb.Key
+		if (i + 9) < length {
+			end = s.spans[SpanReadOnly][SpanGlobal][i+9].EndKey
+		} else {
+			end = s.spans[SpanReadOnly][SpanGlobal][length-1].EndKey
+		}
+		s.spans[SpanReadOnly][SpanGlobal][j] = Span{
+			Span: roachpb.Span{
+				Key:    start,
+				EndKey: end,
+			},
+			Timestamp: s.spans[SpanReadOnly][SpanGlobal][i].Timestamp,
+		}
+		j++
+	}
+	s.spans[SpanReadOnly][SpanGlobal] = s.spans[SpanReadOnly][SpanGlobal][:j]
+	log.Errorf(context.Background(), "MakeGlobalReadOnlySparse: %d, %d",
+		length, len(s.spans[SpanReadOnly][SpanGlobal]))
+}
+
 // String prints a string representation of the SpanSet.
 func (s *SpanSet) String() string {
 	var buf strings.Builder

@@ -14,6 +14,7 @@ import (
 	"context"
 	"sort"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
@@ -228,6 +229,9 @@ func newJoinReader(
 		flowCtx, &fetcher, &jr.desc, int(spec.IndexIdx), jr.colIdxMap, false, /* reverse */
 		rightCols, false /* isCheck */, &jr.alloc, spec.Visibility, spec.LockingStrength, sysColDescs,
 	)
+	if readerType == indexJoinReaderType {
+		fetcher.IsIndexJoin = true
+	}
 
 	if err != nil {
 		return nil, err
@@ -258,9 +262,13 @@ func (jr *joinReader) initJoinReaderStrategy(
 	spanBuilder := span.MakeBuilder(flowCtx.Codec(), &jr.desc, jr.index)
 	spanBuilder.SetNeededColumns(neededRightCols)
 
+	var keyToInputRowIndices map[string][]int
+	if readerType != indexJoinReaderType {
+		keyToInputRowIndices = make(map[string][]int)
+	}
 	spanGenerator := defaultSpanGenerator{
 		spanBuilder:          spanBuilder,
-		keyToInputRowIndices: make(map[string][]int),
+		keyToInputRowIndices: keyToInputRowIndices,
 		numKeyCols:           numKeyCols,
 		lookupCols:           jr.lookupCols,
 	}
@@ -444,6 +452,8 @@ func (jr *joinReader) readInput() (joinReaderState, *execinfrapb.ProducerMetadat
 		// restore the original order of the output during the output collection
 		// phase.
 		sort.Sort(spans)
+	} else if jr.readerType == indexJoinReaderType {
+		sort.Sort(spans)
 	}
 	log.VEventf(jr.Ctx, 1, "scanning %d spans", len(spans))
 	if err := jr.fetcher.StartScan(
@@ -464,12 +474,17 @@ func (jr *joinReader) performLookup() (joinReaderState, *execinfrapb.ProducerMet
 		// Construct a "partial key" of nCols, so we can match the key format that
 		// was stored in our keyToInputRowIndices map. This matches the format that
 		// is output in jr.generateSpan.
-		key, err := jr.fetcher.PartialKey(nCols)
-		if err != nil {
-			jr.MoveToDraining(err)
-			return jrStateUnknown, jr.DrainHelper()
+		var key roachpb.Key
+		// Index joins do not look at this key parameter so we don't bother populating
+		// it since it is not cheap for long keys.
+		if jr.readerType != indexJoinReaderType {
+			var err error
+			key, err = jr.fetcher.PartialKey(nCols)
+			if err != nil {
+				jr.MoveToDraining(err)
+				return jrStateUnknown, jr.DrainHelper()
+			}
 		}
-
 		// Fetch the next row and copy it into the row container.
 		lookedUpRow, _, _, err := jr.fetcher.NextRow(jr.Ctx)
 		if err != nil {

@@ -69,6 +69,7 @@ type txnKVFetcher struct {
 
 	origSpan         roachpb.Span
 	remainingBatches [][]byte
+	IsIndexJoin      bool
 }
 
 var _ kvBatchFetcher = &txnKVFetcher{}
@@ -241,6 +242,7 @@ func makeKVBatchFetcherWithSendFunc(
 func (f *txnKVFetcher) fetch(ctx context.Context) error {
 	var ba roachpb.BatchRequest
 	ba.Header.MaxSpanRequestKeys = f.getBatchSize()
+	ba.Header.IndexJoinSpans = f.IsIndexJoin
 	if ba.Header.MaxSpanRequestKeys > 0 {
 		// If this kvfetcher limits the number of rows returned, also use
 		// target bytes to guard against the case in which the average row

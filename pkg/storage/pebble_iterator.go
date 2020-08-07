@@ -33,8 +33,9 @@ type pebbleIterator struct {
 	keyBuf []byte
 	// Buffers for copying iterator bounds to. Note that the underlying memory
 	// is not GCed upon Close(), to reduce the number of overall allocations.
-	lowerBoundBuf []byte
-	upperBoundBuf []byte
+	lowerBoundBuf [2][]byte
+	upperBoundBuf [2][]byte
+	curBuf        int
 	// Set to true to govern whether to call SeekPrefixGE or SeekGE. Skips
 	// SSTables based on MVCC key when true.
 	prefix bool
@@ -83,15 +84,15 @@ func (p *pebbleIterator) init(handle pebble.Reader, opts IterOptions) {
 		// p.options.LowerBound = EncodeKeyToBuf(p.lowerBoundBuf[:0], MVCCKey{Key: opts.LowerBound}) .
 		// Since we are encoding zero-timestamp MVCC Keys anyway, we can just append
 		// the NUL byte instead of calling EncodeKey which will do the same thing.
-		p.lowerBoundBuf = append(p.lowerBoundBuf[:0], opts.LowerBound...)
-		p.lowerBoundBuf = append(p.lowerBoundBuf, 0x00)
-		p.options.LowerBound = p.lowerBoundBuf
+		p.lowerBoundBuf[0] = append(p.lowerBoundBuf[0][:0], opts.LowerBound...)
+		p.lowerBoundBuf[0] = append(p.lowerBoundBuf[0], 0x00)
+		p.options.LowerBound = p.lowerBoundBuf[0]
 	}
 	if opts.UpperBound != nil {
 		// Same as above.
-		p.upperBoundBuf = append(p.upperBoundBuf[:0], opts.UpperBound...)
-		p.upperBoundBuf = append(p.upperBoundBuf, 0x00)
-		p.options.UpperBound = p.upperBoundBuf
+		p.upperBoundBuf[0] = append(p.upperBoundBuf[0][:0], opts.UpperBound...)
+		p.upperBoundBuf[0] = append(p.upperBoundBuf[0], 0x00)
+		p.options.UpperBound = p.upperBoundBuf[0]
 	}
 
 	if opts.MaxTimestampHint != (hlc.Timestamp{}) {
@@ -142,20 +143,22 @@ func (p *pebbleIterator) setOptions(opts IterOptions) {
 	}
 
 	p.prefix = opts.Prefix
+	p.curBuf = (p.curBuf + 1) % 2
+	i := p.curBuf
 	if opts.LowerBound != nil {
 		// This is the same as
 		// p.options.LowerBound = EncodeKeyToBuf(p.lowerBoundBuf[:0], MVCCKey{Key: opts.LowerBound}) .
 		// Since we are encoding zero-timestamp MVCC Keys anyway, we can just append
 		// the NUL byte instead of calling EncodeKey which will do the same thing.
-		p.lowerBoundBuf = append(p.lowerBoundBuf[:0], opts.LowerBound...)
-		p.lowerBoundBuf = append(p.lowerBoundBuf, 0x00)
-		p.options.LowerBound = p.lowerBoundBuf
+		p.lowerBoundBuf[i] = append(p.lowerBoundBuf[i][:0], opts.LowerBound...)
+		p.lowerBoundBuf[i] = append(p.lowerBoundBuf[i], 0x00)
+		p.options.LowerBound = p.lowerBoundBuf[i]
 	}
 	if opts.UpperBound != nil {
 		// Same as above.
-		p.upperBoundBuf = append(p.upperBoundBuf[:0], opts.UpperBound...)
-		p.upperBoundBuf = append(p.upperBoundBuf, 0x00)
-		p.options.UpperBound = p.upperBoundBuf
+		p.upperBoundBuf[i] = append(p.upperBoundBuf[i][:0], opts.UpperBound...)
+		p.upperBoundBuf[i] = append(p.upperBoundBuf[i], 0x00)
+		p.options.UpperBound = p.upperBoundBuf[i]
 	}
 	p.iter.SetBounds(p.options.LowerBound, p.options.UpperBound)
 }
@@ -414,9 +417,13 @@ func (p *pebbleIterator) FindSplitKey(
 
 // SetUpperBound implements the Iterator interface.
 func (p *pebbleIterator) SetUpperBound(upperBound roachpb.Key) {
-	p.upperBoundBuf = append(p.upperBoundBuf[:0], upperBound...)
-	p.upperBoundBuf = append(p.upperBoundBuf, 0x00)
-	p.options.UpperBound = p.upperBoundBuf
+	prev := p.curBuf
+	p.curBuf = (p.curBuf + 1) % 2
+	next := p.curBuf
+	p.lowerBoundBuf[next] = append(p.lowerBoundBuf[next][:0], p.lowerBoundBuf[prev]...)
+	p.upperBoundBuf[next] = append(p.upperBoundBuf[next][:0], upperBound...)
+	p.upperBoundBuf[next] = append(p.upperBoundBuf[next], 0x00)
+	p.options.UpperBound = p.upperBoundBuf[next]
 	p.iter.SetBounds(p.options.LowerBound, p.options.UpperBound)
 }
 

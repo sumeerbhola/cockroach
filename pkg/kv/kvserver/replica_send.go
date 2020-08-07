@@ -641,6 +641,7 @@ func (r *Replica) collectSpans(
 	// This is still safe as we're only ever writing at timestamps higher than the
 	// timestamp any write latch would be declared at.
 	desc := r.Desc()
+	// The range-local key will precede the keys for the index join that are already sorted.
 	batcheval.DeclareKeysForBatch(desc, ba.Header, latchSpans)
 	for _, union := range ba.Requests {
 		inner := union.GetInner()
@@ -654,7 +655,12 @@ func (r *Replica) collectSpans(
 	// Commands may create a large number of duplicate spans. De-duplicate
 	// them to reduce the number of spans we pass to the spanlatch manager.
 	for _, s := range [...]*spanset.SpanSet{latchSpans, lockSpans} {
-		s.SortAndDedup()
+		if ba.Header.IndexJoinSpans {
+			log.Errorf(context.Background(), "skipping SortAndDedup")
+			// s.MakeGlobalReadOnlySparse()
+		} else {
+			s.SortAndDedup()
+		}
 
 		// If any command gave us spans that are invalid, bail out early
 		// (before passing them to the spanlatch manager, which may panic).
