@@ -14,6 +14,7 @@ package geo
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/geo/geographiclib"
@@ -26,6 +27,7 @@ import (
 	"github.com/golang/geo/s2"
 	"github.com/twpayne/go-geom"
 	"github.com/twpayne/go-geom/encoding/ewkb"
+	"github.com/twpayne/go-geom/encoding/wkbcommon"
 )
 
 // DefaultEWKBEncodingFormat is the default encoding format for EWKB.
@@ -893,4 +895,287 @@ func compareSpatialObjectBytes(lhs geopb.SpatialObject, rhs geopb.SpatialObject)
 		panic(err)
 	}
 	return bytes.Compare(marshalledLHS, marshalledRHS)
+}
+
+type GeomTAlloc struct {
+	coords        []float64
+	coordsOffset  int
+	coordss       []float64
+	coordssOffset int
+	ends          []int
+	endsOffset    int
+	endss         [][]int
+	endssOffset   int
+	// TODO: add others
+	multiPolygon       []geom.MultiPolygon
+	multiPolygonOffset int
+}
+
+func (a *GeomTAlloc) Reset() {
+	// TODO: other offsets
+	a.coords = a.coords[0:cap(a.coords)]
+	a.coordsOffset = 0
+	a.coordss = a.coordss[0:cap(a.coordss)]
+	a.ends = a.ends[:0]
+	a.endss = a.endss[0:cap(a.endss)]
+	a.multiPolygon = a.multiPolygon[:0]
+}
+
+func EWKBUnmarshal(data []byte, alloc *GeomTAlloc) (geom.T, error) {
+	return ewkbRead(bytes.NewBuffer(data), alloc)
+}
+
+const (
+	ewkbZ    = 0x80000000
+	ewkbM    = 0x40000000
+	ewkbSRID = 0x20000000
+)
+
+func ewkbRead(r io.Reader, alloc *GeomTAlloc) (geom.T, error) {
+	alloc.Reset()
+
+	ewkbByteOrder, err := wkbcommon.ReadByte(r)
+	if err != nil {
+		return nil, err
+	}
+	var byteOrder binary.ByteOrder
+	switch ewkbByteOrder {
+	case wkbcommon.XDRID:
+		byteOrder = wkbcommon.XDR
+	case wkbcommon.NDRID:
+		byteOrder = wkbcommon.NDR
+	default:
+		return nil, wkbcommon.ErrUnknownByteOrder(ewkbByteOrder)
+	}
+
+	ewkbGeometryType, err := wkbcommon.ReadUInt32(r, byteOrder)
+	if err != nil {
+		return nil, err
+	}
+	t := wkbcommon.Type(ewkbGeometryType)
+
+	layout := geom.NoLayout
+	switch t & (ewkbZ | ewkbM) {
+	case 0:
+		layout = geom.XY
+	case ewkbZ:
+		layout = geom.XYZ
+	case ewkbM:
+		layout = geom.XYM
+	case ewkbZ | ewkbM:
+		layout = geom.XYZM
+	default:
+		return nil, wkbcommon.ErrUnknownType(t)
+	}
+
+	var srid uint32
+	if ewkbGeometryType&ewkbSRID != 0 {
+		srid, err = wkbcommon.ReadUInt32(r, byteOrder)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	switch t &^ (ewkbZ | ewkbM | ewkbSRID) {
+	case wkbcommon.PointID:
+		flatCoords, err := readFlatCoords0(r, byteOrder, layout.Stride(), alloc)
+		if err != nil {
+			return nil, err
+		}
+		return geom.NewPointFlatMaybeEmpty(layout, flatCoords).SetSRID(int(srid)), nil
+	case wkbcommon.LineStringID:
+		flatCoords, err := readFlatCoords1(r, byteOrder, layout.Stride(), alloc)
+		if err != nil {
+			return nil, err
+		}
+		return geom.NewLineStringFlat(layout, flatCoords).SetSRID(int(srid)), nil
+	case wkbcommon.PolygonID:
+		flatCoords, ends, err := readFlatCoords2(r, byteOrder, layout.Stride(), alloc)
+		if err != nil {
+			return nil, err
+		}
+		return geom.NewPolygonFlat(layout, flatCoords, ends).SetSRID(int(srid)), nil
+	case wkbcommon.MultiPointID:
+		n, err := wkbcommon.ReadUInt32(r, byteOrder)
+		if err != nil {
+			return nil, err
+		}
+		if limit := wkbcommon.MaxGeometryElements[1]; limit >= 0 && int(n) > limit {
+			return nil, wkbcommon.ErrGeometryTooLarge{Level: 1, N: int(n), Limit: limit}
+		}
+		mp := geom.NewMultiPoint(layout).SetSRID(int(srid))
+		for i := uint32(0); i < n; i++ {
+			g, err := ewkbRead(r, alloc)
+			if err != nil {
+				return nil, err
+			}
+			p, ok := g.(*geom.Point)
+			if !ok {
+				return nil, wkbcommon.ErrUnexpectedType{Got: g, Want: &geom.Point{}}
+			}
+			if err = mp.Push(p); err != nil {
+				return nil, err
+			}
+		}
+		return mp, nil
+	case wkbcommon.MultiLineStringID:
+		n, err := wkbcommon.ReadUInt32(r, byteOrder)
+		if err != nil {
+			return nil, err
+		}
+		if limit := wkbcommon.MaxGeometryElements[2]; limit >= 0 && int(n) > limit {
+			return nil, wkbcommon.ErrGeometryTooLarge{Level: 2, N: int(n), Limit: limit}
+		}
+		mls := geom.NewMultiLineString(layout).SetSRID(int(srid))
+		for i := uint32(0); i < n; i++ {
+			g, err := ewkbRead(r, alloc)
+			if err != nil {
+				return nil, err
+			}
+			p, ok := g.(*geom.LineString)
+			if !ok {
+				return nil, wkbcommon.ErrUnexpectedType{Got: g, Want: &geom.LineString{}}
+			}
+			if err = mls.Push(p); err != nil {
+				return nil, err
+			}
+		}
+		return mls, nil
+	case wkbcommon.MultiPolygonID:
+		n, err := wkbcommon.ReadUInt32(r, byteOrder)
+		if err != nil {
+			return nil, err
+		}
+		if limit := wkbcommon.MaxGeometryElements[3]; limit >= 0 && int(n) > limit {
+			return nil, wkbcommon.ErrGeometryTooLarge{Level: 3, N: int(n), Limit: limit}
+		}
+		mp := geom.NewMultiPolygon(layout).SetSRID(int(srid))
+		for i := uint32(0); i < n; i++ {
+			g, err := ewkbRead(r, alloc)
+			if err != nil {
+				return nil, err
+			}
+			p, ok := g.(*geom.Polygon)
+			if !ok {
+				return nil, wkbcommon.ErrUnexpectedType{Got: g, Want: &geom.Polygon{}}
+			}
+			if err = mp.Push(p); err != nil {
+				return nil, err
+			}
+		}
+		return mp, nil
+	case wkbcommon.GeometryCollectionID:
+		n, err := wkbcommon.ReadUInt32(r, byteOrder)
+		if err != nil {
+			return nil, err
+		}
+		if limit := wkbcommon.MaxGeometryElements[1]; limit >= 0 && int(n) > limit {
+			return nil, wkbcommon.ErrGeometryTooLarge{Level: 1, N: int(n), Limit: limit}
+		}
+		gc := geom.NewGeometryCollection().SetSRID(int(srid))
+		for i := uint32(0); i < n; i++ {
+			g, err := Read(r)
+			if err != nil {
+				return nil, err
+			}
+			if err = gc.Push(g); err != nil {
+				return nil, err
+			}
+		}
+		return gc, nil
+	default:
+		return nil, wkbcommon.ErrUnsupportedType(ewkbGeometryType)
+	}
+}
+
+// readFlatCoords0 reads flat coordinates 0.
+func readFlatCoords0(
+	r io.Reader, byteOrder binary.ByteOrder, stride int, alloc *GeomTAlloc,
+) ([]float64, error) {
+	if cap(alloc.coords)-alloc.coordsOffset < stride {
+		nextCap := cap(alloc.coords) * 2
+		if nextCap < stride {
+			nextCap = stride
+		}
+		alloc.coords = make([]float64, nextCap)
+		alloc.coordsOffset = 0
+	}
+	coord := alloc.coords[alloc.coordsOffset : alloc.coordsOffset+stride]
+	alloc.coordsOffset += stride
+	if err := wkbcommon.ReadFloatArray(r, byteOrder, coord); err != nil {
+		return nil, err
+	}
+	return coord, nil
+}
+
+// readFlatCoords1 reads flat coordinates 1.
+func readFlatCoords1(
+	r io.Reader, byteOrder binary.ByteOrder, stride int, alloc *GeomTAlloc,
+) ([]float64, error) {
+	n, err := wkbcommon.ReadUInt32(r, byteOrder)
+	if err != nil {
+		return nil, err
+	}
+	if limit := wkbcommon.MaxGeometryElements[1]; limit >= 0 && int(n) > limit {
+		return nil, wkbcommon.ErrGeometryTooLarge{Level: 1, N: int(n), Limit: limit}
+	}
+	length := int(n) * stride
+	if cap(alloc.coords)-alloc.coordsOffset < length {
+		nextCap := cap(alloc.coords) * 2
+		if nextCap < length {
+			nextCap = length
+		}
+		alloc.coords = make([]float64, nextCap)
+		alloc.coordsOffset = 0
+	}
+	flatCoords := alloc.coords[alloc.coordsOffset : alloc.coordsOffset+length]
+	if err := wkbcommon.ReadFloatArray(r, byteOrder, flatCoords); err != nil {
+		return nil, err
+	}
+	return flatCoords, nil
+}
+
+// readFlatCoords2 reads flat coordinates 2.
+func readFlatCoords2(
+	r io.Reader, byteOrder binary.ByteOrder, stride int, alloc *GeomTAlloc,
+) ([]float64, []int, error) {
+	n, err := wkbcommon.ReadUInt32(r, byteOrder)
+	if err != nil {
+		return nil, nil, err
+	}
+	if limit := wkbcommon.MaxGeometryElements[2]; limit >= 0 && int(n) > limit {
+		return nil, nil, wkbcommon.ErrGeometryTooLarge{Level: 2, N: int(n), Limit: limit}
+	}
+	// var flatCoordss []float64
+	if cap(alloc.ends)-alloc.endsOffset < int(n) {
+		nextCap := cap(alloc.ends) * 2
+		if nextCap < int(n) {
+			nextCap = int(n)
+		}
+		alloc.ends = make([]int, nextCap)
+		alloc.endsOffset = 0
+	}
+	ends := alloc.ends[alloc.endsOffset:alloc.endsOffset]
+	alloc.endsOffset += int(n)
+	flatCoordss := alloc.coordss[alloc.coordssOffset:alloc.coordssOffset]
+	for i := 0; i < int(n); i++ {
+		flatCoords, err := readFlatCoords1(r, byteOrder, stride, alloc)
+		if err != nil {
+			return nil, nil, err
+		}
+		if cap(alloc.coordss)-alloc.coordssOffset < len(flatCoords) {
+			nextCap := cap(alloc.coordss) * 2
+			if nextCap < len(flatCoords)+len(flatCoordss) {
+				nextCap = len(flatCoords) + len(flatCoords)
+			}
+			alloc.coordss = make([]float64, nextCap)
+			copy(alloc.coordss[0:len(flatCoordss)], flatCoordss)
+			flatCoords = alloc.coordss[0:len(flatCoordss)]
+			alloc.coordssOffset = len(flatCoordss)
+		}
+		flatCoordss = append(flatCoordss, flatCoords...)
+		alloc.coordssOffset += len(flatCoords)
+		ends = append(ends, len(flatCoordss))
+	}
+	return flatCoordss, ends, nil
 }
