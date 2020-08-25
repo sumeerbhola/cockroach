@@ -228,6 +228,12 @@ func (s *s2GeometryIndex) Intersects(c context.Context, g *geo.Geometry) (UnionK
 	if err != nil {
 		return nil, err
 	}
+	return s.intersectsClippedGeomT(c, gt, clipped), nil
+}
+
+func (s *s2GeometryIndex) intersectsClippedGeomT(
+	c context.Context, gt geom.T, clipped bool,
+) UnionKeySpans {
 	var spans UnionKeySpans
 	if gt != nil {
 		r := s.s2RegionsFromPlanarGeomT(gt)
@@ -238,12 +244,43 @@ func (s *s2GeometryIndex) Intersects(c context.Context, g *geo.Geometry) (UnionK
 		// possible key, so appending it maintains the sorted order of spans.
 		spans = append(spans, KeySpan{Start: Key(exceedsBoundsCellID), End: Key(exceedsBoundsCellID)})
 	}
-	return spans, nil
+	return spans
+}
+
+func (s *s2GeometryIndex) tryClipBoundingBox(b geopb.BoundingBox) (geom.T, bool, error) {
+	// TODO: clip
+	// f s.xyExceedsBounds(bufferedBbox.LoX, bufferedBbox.LoY) {
+	//			clipped = true
+	//
+	//		}
+	// geos.ClipByRect(g.EWKB(), s.minX+s.deltaX, s.minY+s.deltaY, s.maxX-s.deltaX, s.maxY-s.deltaY)
+	return geom.NewPolygonFlat(
+		geom.XY,
+		[]float64{
+			b.LoX, b.LoY,
+			b.LoX, b.HiY,
+			b.HiX, b.HiY,
+			b.HiX, b.LoY,
+			b.LoX, b.LoY,
+		},
+		[]int{10},
+	), false, nil
 }
 
 func (s *s2GeometryIndex) DWithin(
 	c context.Context, g *geo.Geometry, distance float64,
 ) (UnionKeySpans, error) {
+	bbox := g.SpatialObject().BoundingBox
+	if geo.IsPointBoundingBox(bbox) {
+		var bufferedBbox geo.CartesianBoundingBox
+		bufferedBbox = *(*geo.CartesianBoundingBox)(nil).AddPoint(bbox.LoX, bbox.LoY)
+		bufferedBbox = *bufferedBbox.Buffer(distance, distance)
+		gt, clipped, err := s.tryClipBoundingBox(bufferedBbox.BoundingBox)
+		if err != nil {
+			return nil, err
+		}
+		return s.intersectsClippedGeomT(c, gt, clipped), nil
+	}
 	// TODO(sumeer): are the default params the correct thing to use here?
 	g, err := geomfn.Buffer(g, geomfn.MakeDefaultBufferParams(), distance)
 	if err != nil {
@@ -255,6 +292,8 @@ func (s *s2GeometryIndex) DWithin(
 func (s *s2GeometryIndex) DFullyWithin(
 	c context.Context, g *geo.Geometry, distance float64,
 ) (UnionKeySpans, error) {
+	// TODO
+
 	// TODO(sumeer): are the default params the correct thing to use here?
 	g, err := geomfn.Buffer(g, geomfn.MakeDefaultBufferParams(), distance)
 	if err != nil {

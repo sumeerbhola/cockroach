@@ -329,3 +329,10 @@ func geogLineBBox(g geom.T) s2.Rect {
 	}
 	return bounder.RectBound()
 }
+
+func IsPointBoundingBox(bbox *geopb.BoundingBox) bool {
+	if bbox == nil {
+		return false
+	}
+	return bbox.LoX == bbox.HiX && bbox.LoY == bbox.HiY
+}
