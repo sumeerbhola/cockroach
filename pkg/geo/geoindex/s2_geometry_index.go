@@ -238,6 +238,12 @@ func (s *s2GeometryIndex) Intersects(c context.Context, g geo.Geometry) (UnionKe
 	if err != nil {
 		return nil, err
 	}
+	return s.intersectsClippedGeomT(c, gt, clipped), nil
+}
+
+func (s *s2GeometryIndex) intersectsClippedGeomT(
+	c context.Context, gt geom.T, clipped bool,
+) UnionKeySpans {
 	var spans UnionKeySpans
 	if gt != nil {
 		r := s.s2RegionsFromPlanarGeomT(gt)
@@ -248,23 +254,57 @@ func (s *s2GeometryIndex) Intersects(c context.Context, g geo.Geometry) (UnionKe
 		// possible key, so appending it maintains the sorted order of spans.
 		spans = append(spans, KeySpan{Start: Key(exceedsBoundsCellID), End: Key(exceedsBoundsCellID)})
 	}
-	return spans, nil
+	return spans
+}
+
+func (s *s2GeometryIndex) tryClipBoundingBox(b geopb.BoundingBox) (geom.T, bool, error) {
+	// TODO: clip
+	// f s.xyExceedsBounds(bufferedBbox.LoX, bufferedBbox.LoY) {
+	//			clipped = true
+	//
+	//		}
+	// geos.ClipByRect(g.EWKB(), s.minX+s.deltaX, s.minY+s.deltaY, s.maxX-s.deltaX, s.maxY-s.deltaY)
+	return geom.NewPolygonFlat(
+		geom.XY,
+		[]float64{
+			b.LoX, b.LoY,
+			b.HiX, b.LoY,
+			b.HiX, b.HiY,
+			b.LoX, b.HiY,
+			b.LoX, b.LoY,
+		},
+		[]int{10},
+	), false, nil
 }
 
 func (s *s2GeometryIndex) DWithin(
 	c context.Context, g geo.Geometry, distance float64,
 ) (UnionKeySpans, error) {
-	// TODO(sumeer): are the default params the correct thing to use here?
-	g, err := geomfn.Buffer(g, geomfn.MakeDefaultBufferParams(), distance)
+	bbox := g.CartesianBoundingBox()
+	if bbox == nil {
+		return nil, nil
+	}
+	bbox = bbox.Buffer(distance, distance)
+	gt, clipped, err := s.tryClipBoundingBox(bbox.BoundingBox)
 	if err != nil {
 		return nil, err
 	}
-	return s.Intersects(c, g)
+	return s.intersectsClippedGeomT(c, gt, clipped), nil
+
+	/*
+		// TODO(sumeer): are the default params the correct thing to use here?
+		g, err := geomfn.Buffer(g, geomfn.MakeDefaultBufferParams(), distance)
+		if err != nil {
+			return nil, err
+		}
+		return s.Intersects(c, g)
+	*/
 }
 
 func (s *s2GeometryIndex) DFullyWithin(
 	c context.Context, g geo.Geometry, distance float64,
 ) (UnionKeySpans, error) {
+	// TODO:
 	// TODO(sumeer): are the default params the correct thing to use here?
 	g, err := geomfn.Buffer(g, geomfn.MakeDefaultBufferParams(), distance)
 	if err != nil {

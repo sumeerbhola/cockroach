@@ -13,6 +13,7 @@ package invertedidx
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/cockroachdb/cockroach/pkg/geo"
 	"github.com/cockroachdb/cockroach/pkg/geo/geogfn"
@@ -946,7 +947,7 @@ func (g *geoDatumsToInvertedExpr) PreFilter(
 		return false, err
 	}
 	switch g.preFilterRelationship {
-	case geoindex.DWithin, geoindex.DFullyWithin:
+	case geoindex.DFullyWithin:
 		distance := float64(*g.additionalPreFilterParams[0].(*tree.DFloat))
 		ibb.LoX -= distance
 		ibb.HiX += distance
@@ -958,8 +959,11 @@ func (g *geoDatumsToInvertedExpr) PreFilter(
 		bb := geo.CartesianBoundingBox{BoundingBox: preFilters[i].(*filterState).BoundingBox}
 		g.preFilterCount++
 		switch g.preFilterRelationship {
-		case geoindex.Intersects, geoindex.DWithin:
+		case geoindex.Intersects:
 			result[i] = ibb.Intersects(&bb)
+		case geoindex.DWithin:
+			distance := float64(*g.additionalPreFilterParams[0].(*tree.DFloat))
+			result[i] = computeBBoxDWithin(&ibb, &bb, distance)
 		case geoindex.Covers:
 			result[i] = bb.Covers(&ibb)
 		case geoindex.CoveredBy, geoindex.DFullyWithin:
@@ -971,6 +975,68 @@ func (g *geoDatumsToInvertedExpr) PreFilter(
 		}
 	}
 	return rv, nil
+}
+
+type axisPosition int
+
+const (
+	overlap axisPosition = iota
+	left
+	right
+)
+
+func computeBBoxDWithin(a *geo.CartesianBoundingBox, b *geo.CartesianBoundingBox, d float64) bool {
+	var xAxisPos, yAxisPos axisPosition
+	if b.LoX > a.HiX {
+		xAxisPos = right
+	} else if b.HiX < a.LoX {
+		xAxisPos = left
+	}
+	if b.LoY > a.HiY {
+		yAxisPos = right
+	} else if b.HiY < a.LoY {
+		yAxisPos = left
+	}
+	if xAxisPos == overlap && yAxisPos == overlap {
+		return true
+	}
+	if xAxisPos == overlap {
+		switch yAxisPos {
+		case left:
+			return d >= (a.LoY - b.HiY)
+		case right:
+			return d >= (b.LoY - a.HiY)
+		}
+	}
+	if yAxisPos == overlap {
+		switch xAxisPos {
+		case left:
+			return d >= (a.LoX - b.HiX)
+		case right:
+			return d >= (b.LoX - a.HiX)
+		}
+	}
+	// Neither overlaps
+	if xAxisPos == left && yAxisPos == left {
+		return d >= pointDistance(a.LoX, a.LoY, b.HiX, b.HiY)
+	}
+	if xAxisPos == left && yAxisPos == right {
+		return d >= pointDistance(a.LoX, a.HiY, b.HiX, b.LoY)
+	}
+	if xAxisPos == right && yAxisPos == right {
+		return d >= pointDistance(a.HiX, a.HiY, b.LoX, b.LoY)
+	}
+	if xAxisPos == right && yAxisPos == left {
+		return d >= pointDistance(a.HiX, a.LoY, b.LoX, b.HiY)
+	}
+	panic("computeBBoxDWithin ...")
+	return true
+}
+
+func pointDistance(aX, aY, bX, bY float64) float64 {
+	dx := bX - aX
+	dy := bY - aY
+	return math.Sqrt(dx*dx + dy*dy)
 }
 
 func (g *geoDatumsToInvertedExpr) PreFilterStats() (int, int) {
