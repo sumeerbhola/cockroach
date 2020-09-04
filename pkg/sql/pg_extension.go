@@ -65,7 +65,7 @@ func postgisColumnsTablePopulator(
 					}
 
 					var datumNDims tree.Datum
-					switch m.ShapeType {
+					switch geopb.ShapeType(m.ShapeType) {
 					case geopb.ShapeType_Point, geopb.ShapeType_LineString, geopb.ShapeType_Polygon,
 						geopb.ShapeType_MultiPoint, geopb.ShapeType_MultiLineString, geopb.ShapeType_MultiPolygon,
 						geopb.ShapeType_GeometryCollection:
@@ -80,8 +80,8 @@ func postgisColumnsTablePopulator(
 						}
 					}
 
-					shapeName := m.ShapeType.String()
-					if m.ShapeType == geopb.ShapeType_Unset {
+					shapeName := geopb.ShapeType(m.ShapeType).String()
+					if geopb.ShapeType(m.ShapeType) == geopb.ShapeType_Unset {
 						shapeName = geopb.ShapeType_Geometry.String()
 					}
 

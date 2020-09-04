@@ -41,3 +41,74 @@ type WKB []byte
 
 // EWKB is the Extended Well Known Bytes form of a spatial object.
 type EWKB []byte
+
+// ShapeType is the type of a spatial shape. Each of these corresponds to a
+// different representation and serialization format. For example, a Point is a
+// pair of doubles (or more than that for geometries with Z or N), a LineString
+// is an ordered series of Points, etc.
+type ShapeType int16
+
+const (
+	ShapeType_Unset           ShapeType = 0
+	ShapeType_Point           ShapeType = 1
+	ShapeType_LineString      ShapeType = 2
+	ShapeType_Polygon         ShapeType = 3
+	ShapeType_MultiPoint      ShapeType = 4
+	ShapeType_MultiLineString ShapeType = 5
+	ShapeType_MultiPolygon    ShapeType = 6
+	// Geometry can contain any type.
+	ShapeType_Geometry ShapeType = 7
+	// GeometryCollection can contain a list of any above type except for Geometry.
+	ShapeType_GeometryCollection ShapeType = 8
+)
+
+var ShapeType_name = map[int16]string{
+	0: "Unset",
+	1: "Point",
+	2: "LineString",
+	3: "Polygon",
+	4: "MultiPoint",
+	5: "MultiLineString",
+	6: "MultiPolygon",
+	7: "Geometry",
+	8: "GeometryCollection",
+}
+var ShapeType_value = map[string]int16{
+	"Unset":              0,
+	"Point":              1,
+	"LineString":         2,
+	"Polygon":            3,
+	"MultiPoint":         4,
+	"MultiLineString":    5,
+	"MultiPolygon":       6,
+	"Geometry":           7,
+	"GeometryCollection": 8,
+}
+
+func (x ShapeType) String() string {
+	return ShapeType_name[int16(x)]
+}
+
+// SpatialObjectType represents the type of the SpatialObject.
+type SpatialObjectType int16
+
+const (
+	SpatialObjectType_Unknown       SpatialObjectType = 0
+	SpatialObjectType_GeographyType SpatialObjectType = 1
+	SpatialObjectType_GeometryType  SpatialObjectType = 2
+)
+
+var SpatialObjectType_name = map[int16]string{
+	0: "Unknown",
+	1: "GeographyType",
+	2: "GeometryType",
+}
+var SpatialObjectType_value = map[string]int16{
+	"Unknown":       0,
+	"GeographyType": 1,
+	"GeometryType":  2,
+}
+
+func (x SpatialObjectType) String() string {
+	return SpatialObjectType_name[int16(x)]
+}

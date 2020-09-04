@@ -862,7 +862,7 @@ func MakeGeometry(shape geopb.ShapeType, srid geopb.SRID) *T {
 		Oid:    oidext.T_geometry,
 		Locale: &emptyLocale,
 		GeoMetadata: &GeoMetadata{
-			ShapeType: shape,
+			ShapeType: int32(shape),
 			SRID:      srid,
 		},
 	}}
@@ -879,7 +879,7 @@ func MakeGeography(shape geopb.ShapeType, srid geopb.SRID) *T {
 		Oid:    oidext.T_geography,
 		Locale: &emptyLocale,
 		GeoMetadata: &GeoMetadata{
-			ShapeType: shape,
+			ShapeType: int32(shape),
 			SRID:      srid,
 		},
 	}}
@@ -2603,13 +2603,13 @@ func (m *GeoMetadata) SQLString() string {
 	// If SRID is available, display both shape and SRID.
 	// If shape is available but not SRID, just display shape.
 	if m.SRID != 0 {
-		shapeName := strings.ToLower(m.ShapeType.String())
-		if m.ShapeType == geopb.ShapeType_Unset {
+		shapeName := strings.ToLower(geopb.ShapeType(m.ShapeType).String())
+		if geopb.ShapeType(m.ShapeType) == geopb.ShapeType_Unset {
 			shapeName = "geometry"
 		}
 		return fmt.Sprintf("(%s,%d)", shapeName, m.SRID)
-	} else if m.ShapeType != geopb.ShapeType_Unset {
-		return fmt.Sprintf("(%s)", m.ShapeType)
+	} else if geopb.ShapeType(m.ShapeType) != geopb.ShapeType_Unset {
+		return fmt.Sprintf("(%s)", geopb.ShapeType(m.ShapeType))
 	}
 	return ""
 }

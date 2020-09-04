@@ -14,7 +14,7 @@ package cockroach.sql.sem.types;
 option go_package = "types";
 
 import "gogoproto/gogo.proto";
-import "geo/geopb/geopb.proto";
+// import "geo/geopb/geopb.proto";
 
 // See the comment header for the T.Family method for more details.
 enum Family {
@@ -424,7 +424,8 @@ message IntervalDurationField {
 // GeoMetadata contains metadata associated with Geospatial data types.
 message GeoMetadata {
   optional int32 srid = 1 [(gogoproto.nullable)=false,(gogoproto.customname)="SRID",(gogoproto.casttype)="github.com/cockroachdb/cockroach/pkg/geo/geopb.SRID"];
-  optional geopb.ShapeType shape_type = 2 [(gogoproto.nullable)=false];
+  optional int32 shape_type = 2 [(gogoproto.nullable)=false];
+  // optional int32 shape_type = 2 [(gogoproto.nullable)=false,(gogoproto.customname)="ShapeType",(gogoproto.casttype)="github.com/cockroachdb/cockroach/pkg/geo/geopb.ShapeType"];
 }
 
 // PersistentUserDefinedTypeMetadata contains user defined type metadata

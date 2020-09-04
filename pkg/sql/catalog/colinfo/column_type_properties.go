@@ -16,6 +16,7 @@ import (
 
 	"github.com/cockroachdb/apd/v2"
 	"github.com/cockroachdb/cockroach/pkg/geo"
+	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -177,7 +178,7 @@ func AdjustValueToColumnType(
 			if err := geo.SpatialObjectFitsColumnMetadata(
 				in.Geometry.SpatialObject(),
 				typ.InternalType.GeoMetadata.SRID,
-				typ.InternalType.GeoMetadata.ShapeType,
+				geopb.ShapeType(typ.InternalType.GeoMetadata.ShapeType),
 			); err != nil {
 				return nil, err
 			}
@@ -187,7 +188,7 @@ func AdjustValueToColumnType(
 			if err := geo.SpatialObjectFitsColumnMetadata(
 				in.Geography.SpatialObject(),
 				typ.InternalType.GeoMetadata.SRID,
-				typ.InternalType.GeoMetadata.ShapeType,
+				geopb.ShapeType(typ.InternalType.GeoMetadata.ShapeType),
 			); err != nil {
 				return nil, err
 			}
