@@ -16,6 +16,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/opt"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/errors"
 )
@@ -146,4 +149,19 @@ func makeSpanExpression(op SetOperator, n0 *SpanExpression, n1 *SpanExpression) 
 		Left:     n0,
 		Right:    n1,
 	}
+}
+
+// Placed here instead of
+// in invertedidx to avoid a cyclic package dependency.
+type PreFiltererStateForInvertedFilterer struct {
+	Typ *types.T
+
+	// First way of passing things to exec.
+	PreFilterRelationship     geoindex.RelationshipType
+	AdditionalPreFilterParams []tree.Datum
+	BindDatum                 tree.Datum
+
+	// Second way.
+	PreFiltererExpr opt.ScalarExpr
+	VariableCol     opt.ColumnID
 }

@@ -19,10 +19,12 @@ import (
 )
 
 type invertedFilterNode struct {
-	input         planNode
-	expression    *invertedexpr.SpanExpression
-	invColumn     int
-	resultColumns colinfo.ResultColumns
+	input            planNode
+	expression       *invertedexpr.SpanExpression
+	preFiltererState *invertedexpr.PreFiltererStateForInvertedFilterer
+	preFiltererExpr  tree.TypedExpr
+	invColumn        int
+	resultColumns    colinfo.ResultColumns
 }
 
 func (n *invertedFilterNode) startExec(params runParams) error {

@@ -17,6 +17,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/invertedexpr"
+	"github.com/cockroachdb/cockroach/pkg/sql/opt/invertedidx"
+	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowcontainer"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -88,13 +90,6 @@ func newInvertedFilterer(
 		},
 	}
 
-	// TODO(sumeer): for expressions that only involve unions, and the output
-	// does not need to be in key-order, we should incrementally output after
-	// de-duping. It will reduce the container memory/disk by 2x.
-
-	// Prepare inverted evaluator for later evaluation.
-	ifr.invertedEval.init()
-
 	// The RowContainer columns are the PK columns, that are the columns
 	// other than the inverted column. The output has the same types as
 	// the input.
@@ -138,7 +133,76 @@ func newInvertedFilterer(
 		ifr.FinishTrace = ifr.outputStatsToTrace
 	}
 
+	/*
+		if spec.PreFilterRelationship != nil {
+			// TODO: move this into invertedidx, since this contains geo specific code.
+			// TODO: this hardcoding of a single relationship in the spec is ugly.
+			// Should pass an expression through the spec, like we do for
+			// inverted join.
+			pfRelationship := geoindex.RelationshipType(*spec.PreFilterRelationship)
+			semaCtx := flowCtx.TypeResolverFactory.NewSemaContext(flowCtx.EvalCtx.Txn)
+			bindDatum, err := ifr.getDatumForExpr(*spec.PreFilterBindDatum, semaCtx)
+			if err != nil {
+				return nil, err
+			}
+			additionalParamDatums := make([]tree.Datum, len(spec.PreFilterAdditionalParamDatums))
+			for i := range spec.PreFilterAdditionalParamDatums {
+				additionalParamDatums[i], err = ifr.getDatumForExpr(*spec.PreFilterAdditionalParamDatums[i], semaCtx)
+				if err != nil {
+					return nil, err
+				}
+			}
+			preFilterer := invertedidx.NewPreFilterer(bindDatum.ResolvedType(), pfRelationship, additionalParamDatums)
+			preFilter := preFilterer.Bind(bindDatum)
+			ifr.invertedEval.filterer = preFilterer
+			ifr.invertedEval.preFilterState = append(ifr.invertedEval.preFilterState, preFilter)
+		}
+
+	*/
+	if spec.PreFiltererSpec != nil {
+		semaCtx := flowCtx.TypeResolverFactory.NewSemaContext(flowCtx.EvalCtx.Txn)
+		var exprHelper execinfrapb.ExprHelper
+		colTypes := []*types.T{spec.PreFiltererSpec.Type}
+		if err := exprHelper.Init(spec.PreFiltererSpec.Expression, colTypes, semaCtx, ifr.EvalCtx); err != nil {
+			return nil, err
+		}
+		preFilterer, preFiltererState, err := invertedidx.NewBoundPreFilterer(
+			spec.PreFiltererSpec.Type, exprHelper.Expr)
+		if err != nil {
+			return nil, err
+		}
+		ifr.invertedEval.filterer = preFilterer
+		ifr.invertedEval.preFilterState = append(ifr.invertedEval.preFilterState, preFiltererState)
+	}
+	// TODO(sumeer): for expressions that only involve unions, and the output
+	// does not need to be in key-order, we should incrementally output after
+	// de-duping. It will reduce the container memory/disk by 2x.
+
+	// Prepare inverted evaluator for later evaluation.
+	ifr.invertedEval.init()
+
 	return ifr, nil
+}
+
+func (ifr *invertedFilterer) getDatumForExpr(
+	expr execinfrapb.Expression, semaCtx *tree.SemaContext,
+) (tree.Datum, error) {
+	typedExpr := expr.LocalExpr
+	if typedExpr == nil {
+		ex, err := parser.ParseExpr(expr.Expr)
+		if err != nil {
+			return nil, err
+		}
+		typedExpr, err = tree.TypeCheck(ifr.Ctx, ex, semaCtx, types.Any)
+		if err != nil {
+			return nil, err
+		}
+	}
+	d, ok := typedExpr.(tree.Datum)
+	if !ok {
+		panic(errors.AssertionFailedf("expected expr to be a datum"))
+	}
+	return d, nil
 }
 
 // Next is part of the RowSource interface.

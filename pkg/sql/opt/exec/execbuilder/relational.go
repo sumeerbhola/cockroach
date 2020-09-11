@@ -602,8 +602,23 @@ func (b *Builder) buildInvertedFilter(invFilter *memo.InvertedFilterExpr) (execP
 	// A filtering node does not modify the schema.
 	res := execPlan{outputCols: input.outputCols}
 	invertedCol := input.getNodeColumnOrdinal(invFilter.InvertedColumn)
+	var typedPreFilterExpr tree.TypedExpr
+	if invFilter.PreFiltererState.PreFiltererExpr != nil {
+		// The expression is a function with a single unknown, corresponding to
+		// the indexed column. We simply assign it an ordinal of 0.
+		var colMap opt.ColMap
+		colMap.Set(int(invFilter.PreFiltererState.VariableCol), 0)
+		ctx := buildScalarCtx{
+			ivh:     tree.MakeIndexedVarHelper(nil /* container */, colMap.Len()),
+			ivarMap: colMap,
+		}
+		typedPreFilterExpr, err = b.buildScalar(&ctx, invFilter.PreFiltererState.PreFiltererExpr)
+		if err != nil {
+			return execPlan{}, err
+		}
+	}
 	res.root, err = b.factory.ConstructInvertedFilter(
-		input.root, invFilter.InvertedExpression, invertedCol,
+		input.root, invFilter.InvertedExpression, invFilter.PreFiltererState, typedPreFilterExpr, invertedCol,
 	)
 	if err != nil {
 		return execPlan{}, err

@@ -31,3 +31,10 @@ func NewDatumsToInvertedExpr(
 
 	return NewGeoDatumsToInvertedExpr(evalCtx, colTypes, expr, &desc.GeoConfig)
 }
+
+func NewBoundPreFilterer(typ *types.T, expr tree.TypedExpr) (*PreFilterer, interface{}, error) {
+	if !typ.Equivalent(types.Geometry) && !typ.Equivalent(types.Geography) {
+		return nil, nil, fmt.Errorf("pre-filtering not supported for type %s", typ)
+	}
+	return newGeoBoundPreFilterer(typ, expr)
+}
