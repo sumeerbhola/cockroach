@@ -13,6 +13,7 @@ package kvserver
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
@@ -35,6 +36,9 @@ func (r *Replica) Send(
 ) (*roachpb.BatchResponse, *roachpb.Error) {
 	return r.sendWithRangeID(ctx, r.RangeID, &ba)
 }
+
+var WriteBatchCount int64
+var WriteBatchUnIndexedCount int64
 
 // sendWithRangeID takes an unused rangeID argument so that the range
 // ID will be accessible in stack traces (both in panics and when
@@ -77,6 +81,48 @@ func (r *Replica) sendWithRangeID(
 	ba, err := maybeStripInFlightWrites(ba)
 	if err != nil {
 		return nil, roachpb.NewError(err)
+	}
+
+	if !isReadOnly {
+		canUseUnindexedBatch := true
+		// hasMutations = true implies some benefit of using an un-indexed batch.
+		hasMutations := false
+		var spans []roachpb.Span
+		for _, req := range ba.Requests {
+			switch t := req.GetInner().(type) {
+			case *roachpb.PutRequest:
+				spans = append(spans, t.Header().Span())
+				hasMutations = true
+			case *roachpb.ConditionalPutRequest:
+				spans = append(spans, t.Header().Span())
+				hasMutations = true
+			case *roachpb.DeleteRequest:
+				spans = append(spans, t.Header().Span())
+				hasMutations = true
+			case *roachpb.DeleteRangeRequest:
+				spans = append(spans, t.Header().Span())
+				hasMutations = true
+			case *roachpb.EndTxnRequest:
+				spans = append(spans, t.LockSpans...)
+				if t.InternalCommitTrigger != nil {
+					canUseUnindexedBatch = false
+				}
+			default:
+				canUseUnindexedBatch = false
+			}
+		}
+		if canUseUnindexedBatch {
+			_, canUseUnindexedBatch = roachpb.MergeSpans(spans)
+		}
+		if hasMutations {
+			wbCount := atomic.AddInt64(&WriteBatchCount, 1)
+			if canUseUnindexedBatch {
+				atomic.AddInt64(&WriteBatchUnIndexedCount, 1)
+			}
+			if wbCount%500 == 0 {
+				log.Infof(ctx, "WriteBatch: Count: %d, UnIndexed: %d", wbCount, atomic.LoadInt64(&WriteBatchUnIndexedCount))
+			}
+		}
 	}
 
 	if filter := r.store.cfg.TestingKnobs.TestingRequestFilter; filter != nil {
