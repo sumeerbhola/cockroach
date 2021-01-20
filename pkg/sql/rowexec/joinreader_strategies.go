@@ -238,6 +238,10 @@ func (s *joinReaderNoOrderingStrategy) nextRowToEmit(
 		}
 		inputRow := s.inputRows[s.emitState.unmatchedInputRowIndices[s.emitState.unmatchedInputRowIndicesCursor]]
 		s.emitState.unmatchedInputRowIndicesCursor++
+		if s.groupingState.doGrouping {
+			// Second join in paired join
+			inputRow = changeLookupColsToNullForUnmatchedRowInSecondPairedJoin(inputRow, s.lookupCols)
+		}
 		if !s.joinType.ShouldIncludeRightColsInOutput() {
 			return inputRow, jrEmittingRows, nil
 		}
@@ -502,6 +506,9 @@ func (s *joinReaderOrderingStrategy) nextRowToEmit(
 		s.emitCursor.inputRowIdx++
 		s.emitCursor.outputRowIdx = 0
 		if s.groupingState.isUnmatched(inputRowIdx) {
+			if s.groupingState.doGrouping {
+				inputRow = changeLookupColsToNullForUnmatchedRowInSecondPairedJoin(inputRow, s.lookupCols)
+			}
 			switch s.joinType {
 			case descpb.LeftOuterJoin:
 				// An outer-join non-match means we emit the input row with NULLs for

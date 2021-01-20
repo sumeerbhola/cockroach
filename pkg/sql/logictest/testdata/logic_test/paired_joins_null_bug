@@ -1,0 +1,86 @@
+# LogicTest: local
+
+statement ok
+CREATE TABLE j1 (
+  k INT PRIMARY KEY,
+  j JSON
+)
+
+statement ok
+INSERT INTO j1 VALUES (1, '{"a": "b"}')
+
+statement ok
+CREATE TABLE j2 (
+  k INT PRIMARY KEY,
+  j JSON,
+  INVERTED INDEX j_idx (j)
+)
+
+statement ok
+INSERT INTO j2 VALUES (1, '{"a": "b"}')
+
+query T
+EXPLAIN (OPT, VERBOSE)
+SELECT j1.*, j2.*
+FROM j1 LEFT INVERTED JOIN j2@j_idx
+  ON j2.j @> j1.j AND j2.j = '"foo"'
+ORDER BY j1.k, j2.k
+----
+sort (segmented)
+ ├── columns: k:1 j:2 k:5 j:6
+ ├── immutable
+ ├── stats: [rows=1000, distinct(1)=1000, null(1)=0]
+ ├── cost: 102714.07
+ ├── key: (1,5)
+ ├── fd: (1)-->(2), (1,5)-->(6)
+ ├── ordering: +1,+5
+ ├── prune: (1,5)
+ ├── interesting orderings: (+1) (+5)
+ └── left-join (lookup j2)
+      ├── columns: j1.k:1 j1.j:2 j2.k:5 j2.j:6
+      ├── key columns: [5] = [5]
+      ├── lookup columns are key
+      ├── immutable
+      ├── stats: [rows=1000, distinct(1)=1000, null(1)=0]
+      ├── cost: 102684.06
+      ├── key: (1,5)
+      ├── fd: (1)-->(2), (1,5)-->(6)
+      ├── ordering: +1
+      ├── prune: (1,5)
+      ├── interesting orderings: (+1) (+5)
+      ├── left-join (inverted j2@j_idx)
+      │    ├── columns: j1.k:1 j1.j:2 j2.k:5 continuation:11
+      │    ├── flags: force inverted join (into right side)
+      │    ├── inverted-expr
+      │    │    └── j2.j:6 @> j1.j:2
+      │    ├── stats: [rows=10000, distinct(1)=1000, null(1)=0]
+      │    ├── cost: 41984.03
+      │    ├── key: (1,5)
+      │    ├── fd: (1)-->(2), (5)-->(11)
+      │    ├── ordering: +1
+      │    ├── scan j1
+      │    │    ├── columns: j1.k:1 j1.j:2
+      │    │    ├── stats: [rows=1000, distinct(1)=1000, null(1)=0]
+      │    │    ├── cost: 1084.02
+      │    │    ├── key: (1)
+      │    │    ├── fd: (1)-->(2)
+      │    │    ├── ordering: +1
+      │    │    ├── prune: (1,2)
+      │    │    ├── interesting orderings: (+1)
+      │    │    └── unfiltered-cols: (1-4)
+      │    └── filters (true)
+      └── filters
+           ├── j2.j:6 @> j1.j:2 [outer=(2,6), immutable]
+           └── j2.j:6 = '"foo"' [outer=(6), immutable, constraints=(/6: [/'"foo"' - /'"foo"']; tight), fd=()-->(6)]
+
+# NOTE: The output should be:
+#
+#   1  {"a": "b"}  NULL  NULL
+#
+query ITIT
+SELECT j1.*, j2.*
+FROM j1 LEFT INVERTED JOIN j2@j_idx
+  ON j2.j @> j1.j AND j2.j = '"foo"'
+ORDER BY j1.k, j2.k
+----
+1  {"a": "b"}  NULL  NULL

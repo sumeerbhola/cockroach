@@ -790,9 +790,11 @@ func (jr *joinReader) allContinuationValsProcessed() rowenc.EncDatumRow {
 			// match.
 			switch jr.joinType {
 			case descpb.LeftOuterJoin:
-				outRow = jr.renderUnmatchedRow(jr.lastBatchState.lastInputRow, leftSide)
+				outRow = changeLookupColsToNullForUnmatchedRowInSecondPairedJoin(
+					jr.renderUnmatchedRow(jr.lastBatchState.lastInputRow, leftSide), jr.lookupCols)
 			case descpb.LeftAntiJoin:
-				outRow = jr.lastBatchState.lastInputRow
+				outRow = changeLookupColsToNullForUnmatchedRowInSecondPairedJoin(
+					jr.lastBatchState.lastInputRow, jr.lookupCols)
 			}
 		}
 		// Else the last group matched, so already emitted 1+ row for left outer
@@ -804,6 +806,16 @@ func (jr *joinReader) allContinuationValsProcessed() rowenc.EncDatumRow {
 
 	jr.lastBatchState.lastInputRow = nil
 	return outRow
+}
+
+func changeLookupColsToNullForUnmatchedRowInSecondPairedJoin(
+	row rowenc.EncDatumRow, lookupCols []uint32,
+) rowenc.EncDatumRow {
+	for _, col := range lookupCols {
+		row[col].UnsetDatum()
+		row[col].Datum = tree.DNull
+	}
+	return row
 }
 
 // updateGroupingStateForNonEmptyBatch is called once the batch has been read
