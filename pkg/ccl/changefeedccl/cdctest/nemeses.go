@@ -57,7 +57,7 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 		eventPauseCount = 0
 	}
 	ns := &nemeses{
-		maxTestColumnCount: 0,
+		maxTestColumnCount: 10,
 		rowCount:           4,
 		db:                 db,
 		// eventMix does not have to add to 100
@@ -103,20 +103,20 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 			// value in order to trigger a backfill.
 			eventAddColumn{
 				CanAddColumnAfter: fsm.True,
-			}: 0,
+			}: 5,
 
 			eventAddColumn{
 				CanAddColumnAfter: fsm.False,
-			}: 0,
+			}: 5,
 
 			// eventRemoveColumn performs a schema change by removing a column.
 			eventRemoveColumn{
 				CanRemoveColumnAfter: fsm.True,
-			}: 0,
+			}: 5,
 
 			eventRemoveColumn{
 				CanRemoveColumnAfter: fsm.False,
-			}: 0,
+			}: 5,
 		},
 	}
 

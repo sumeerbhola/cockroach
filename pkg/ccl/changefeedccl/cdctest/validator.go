@@ -425,10 +425,8 @@ func (v *fingerprintValidator) applyRowUpdate(row validatorRow) (_err error) {
 			args = append(args, datum)
 		}
 	}
-	/*
-		log.Infof(context.Background(), "applying %s: %s, %s, %s",
-			row.updated.AsOfSystemTime(), stmtBuf.String(), row.key, row.value)
-	*/
+	log.Infof(context.Background(), "applying %s: %s, %s, %s",
+		row.updated.AsOfSystemTime(), stmtBuf.String(), row.key, row.value)
 	_, err := v.sqlDB.Exec(stmtBuf.String(), args...)
 	return err
 }
@@ -504,6 +502,10 @@ func (v *fingerprintValidator) NoteResolved(partition string, resolved hlc.Times
 	return nil
 }
 
+type queryInterface interface {
+	Query(query string, args ...interface{}) (*gosql.Rows, error)
+}
+
 func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 	var orig string
 	if err := v.sqlDB.QueryRow(`SELECT IFNULL(fingerprint, 'EMPTY') FROM [
@@ -518,9 +520,13 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 		return err
 	}
 	if orig != check {
-		queryToRowsStr := func(query string) []string {
+		txn, err := v.sqlDB.Begin()
+		if err != nil {
+			panic(err)
+		}
+		queryToRowsStr := func(qi queryInterface, query string) []string {
 			log.Infof(context.Background(), "queryToRowStr: %s", query)
-			rows, err := v.sqlDB.Query(query)
+			rows, err := qi.Query(query)
 			if err != nil {
 				panic(err)
 			}
@@ -534,13 +540,28 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 			}
 			return rv
 		}
-		origData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` + v.origTable +
-			` AS OF SYSTEM TIME '` + ts.AsOfSystemTime() + `' ORDER BY id`)
-		fprintData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` +
-			v.fprintTable + ` ORDER BY id`)
+		origData := queryToRowsStr(v.sqlDB, `SELECT * FROM `+v.origTable+
+			` AS OF SYSTEM TIME '`+ts.AsOfSystemTime()+`' ORDER BY id`)
+		fprintData := queryToRowsStr(txn, `SELECT * FROM `+
+			v.fprintTable+` ORDER BY id`)
+		var check2 string
+		if err := txn.QueryRow(`SELECT IFNULL(fingerprint, 'EMPTY') FROM [
+		SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE ` + v.fprintTable + ` ]`).Scan(&check2); err != nil {
+			panic(err)
+		}
+		if err := txn.Commit(); err != nil {
+			panic(err)
+		}
+		/*
+			origData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` + v.origTable +
+				` AS OF SYSTEM TIME '` + ts.AsOfSystemTime() + `' ORDER BY id`)
+			fprintData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` +
+				v.fprintTable + ` ORDER BY id`)
+		*/
 
 		log.Infof(context.Background(),
-			"fingerprints did not match at %s: %s vs %s", ts.AsOfSystemTime(), orig, check)
+			"fingerprints did not match at %s: %s vs %s(%s)", ts.AsOfSystemTime(),
+			orig, check, check2)
 		log.Infof(context.Background(),
 			"diff:\n%s", strings.Join(pretty.Diff(origData, fprintData), "\n"))
 		for i := range origData {
