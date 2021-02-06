@@ -68,6 +68,7 @@ func (s *initResolvedTSScan) Run(ctx context.Context) {
 func (s *initResolvedTSScan) iterateAndConsume(ctx context.Context) error {
 	startKey := storage.MakeMVCCMetadataKey(s.p.Span.Key.AsRawKey())
 	endKey := storage.MakeMVCCMetadataKey(s.p.Span.EndKey.AsRawKey())
+	log.Infof(ctx, "initResolvedTSSScan: [%s, %s)", startKey.String(), endKey.String())
 
 	// Iterate through all keys using NextKey. This will look at the first MVCC
 	// version for each key. We're only looking for MVCCMetadata versions, which
@@ -101,6 +102,10 @@ func (s *initResolvedTSScan) iterateAndConsume(ctx context.Context) error {
 				TxnMinTimestamp: meta.Txn.MinTimestamp,
 				Timestamp:       meta.Txn.WriteTimestamp,
 			})
+			// TODO: don't we need to copy the key? since the meta will be reused?
+			log.Infof(ctx, "initResolvedTSSScan op %d: txn-key: %s, ts: %s",
+				storage.MVCCWriteIntentOpType, roachpb.Key(meta.Txn.Key).String(),
+				meta.Txn.WriteTimestamp.AsOfSystemTime())
 			s.p.sendEvent(event{ops: ops[:]}, 0 /* timeout */)
 		}
 	}

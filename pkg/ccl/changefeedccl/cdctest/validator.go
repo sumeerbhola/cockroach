@@ -10,6 +10,7 @@ package cdctest
 
 import (
 	"bytes"
+	"context"
 	gosql "database/sql"
 	gojson "encoding/json"
 	"fmt"
@@ -17,8 +18,11 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
+	"github.com/kr/pretty"
 )
 
 // Validator checks for violations of our changefeed ordering and delivery
@@ -335,6 +339,8 @@ func NewFingerprintValidator(
 func (v *fingerprintValidator) NoteRow(
 	ignoredPartition string, key, value string, updated hlc.Timestamp,
 ) error {
+	// TODO: after intent is resolved. May want to parse here and see whether stuck
+	// in buffer.
 	if v.firstRowTimestamp.IsEmpty() || updated.Less(v.firstRowTimestamp) {
 		v.firstRowTimestamp = updated
 	}
@@ -419,6 +425,10 @@ func (v *fingerprintValidator) applyRowUpdate(row validatorRow) (_err error) {
 			args = append(args, datum)
 		}
 	}
+	/*
+		log.Infof(context.Background(), "applying %s: %s, %s, %s",
+			row.updated.AsOfSystemTime(), stmtBuf.String(), row.key, row.value)
+	*/
 	_, err := v.sqlDB.Exec(stmtBuf.String(), args...)
 	return err
 }
@@ -508,6 +518,40 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 		return err
 	}
 	if orig != check {
+		queryToRowsStr := func(query string) []string {
+			log.Infof(context.Background(), "queryToRowStr: %s", query)
+			rows, err := v.sqlDB.Query(query)
+			if err != nil {
+				panic(err)
+			}
+			rowMat, err := sqlutils.RowsToStrMatrix(rows)
+			if err != nil {
+				panic(err)
+			}
+			rv := make([]string, len(rowMat))
+			for i := range rowMat {
+				rv[i] = strings.Join(rowMat[i], ", ")
+			}
+			return rv
+		}
+		origData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` + v.origTable +
+			` AS OF SYSTEM TIME '` + ts.AsOfSystemTime() + `' ORDER BY id`)
+		fprintData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` +
+			v.fprintTable + ` ORDER BY id`)
+
+		log.Infof(context.Background(),
+			"fingerprints did not match at %s: %s vs %s", ts.AsOfSystemTime(), orig, check)
+		log.Infof(context.Background(),
+			"diff:\n%s", strings.Join(pretty.Diff(origData, fprintData), "\n"))
+		for i := range origData {
+			log.Infof(context.Background(), "orig %d: %s", i, origData[i])
+			if i < len(fprintData) {
+				log.Infof(context.Background(), "fpri %d: %s", i, fprintData[i])
+			}
+		}
+		for i := len(origData); i < len(fprintData); i++ {
+			log.Infof(context.Background(), "fpri %d: %s", i, fprintData[i])
+		}
 		v.failures = append(v.failures, fmt.Sprintf(
 			`fingerprints did not match at %s: %s vs %s`, ts.AsOfSystemTime(), orig, check))
 	}

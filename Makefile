@@ -124,7 +124,7 @@ SUBTESTS :=
 LINTTIMEOUT := 30m
 
 ## Test timeout to use for regular tests.
-TESTTIMEOUT := 30m
+TESTTIMEOUT := 300m
 
 ## Test timeout to use for race tests.
 RACETIMEOUT := 30m
@@ -136,7 +136,7 @@ ACCEPTANCETIMEOUT := 30m
 BENCHTIMEOUT := 5m
 
 ## Extra flags to pass to the go test runner, e.g. "-v --vmodule=raft=1"
-TESTFLAGS :=
+TESTFLAGS := -v -show-logs -count 100
 
 ## Flags to pass to `go test` invocations that actually run tests, but not
 ## elsewhere. Used for the -json flag which we'll only want to pass
