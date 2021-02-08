@@ -136,7 +136,7 @@ ACCEPTANCETIMEOUT := 30m
 BENCHTIMEOUT := 5m
 
 ## Extra flags to pass to the go test runner, e.g. "-v --vmodule=raft=1"
-TESTFLAGS := -v -show-logs -count 100
+TESTFLAGS := -v -show-logs -count 400
 
 ## Flags to pass to `go test` invocations that actually run tests, but not
 ## elsewhere. Used for the -json flag which we'll only want to pass

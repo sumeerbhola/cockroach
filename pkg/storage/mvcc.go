@@ -1739,6 +1739,9 @@ func mvccPutInternal(
 	if txn := buf.newMeta.Txn; txn != nil {
 		logicalOpDetails.Txn = *txn
 	}
+	if logicalOp == MVCCWriteIntentOpType && value == nil {
+		logicalOp = mvccWriteDeletedIntentOpType
+	}
 	writer.LogLogicalOp(logicalOp, logicalOpDetails)
 
 	return maybeTooOldErr

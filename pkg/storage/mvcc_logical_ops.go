@@ -46,6 +46,7 @@ const (
 	MVCCCommitIntentOpType
 	// MVCCAbortIntentOpType corresponds to the MVCCAbortIntentOp variant.
 	MVCCAbortIntentOpType
+	mvccWriteDeletedIntentOpType
 )
 
 // MVCCLogicalOpDetails contains details about the occurrence of an MVCC logical
@@ -87,6 +88,11 @@ func (ol *OpLoggerBatch) LogLogicalOp(op MVCCLogicalOpType, details MVCCLogicalO
 }
 
 func (ol *OpLoggerBatch) logLogicalOp(op MVCCLogicalOpType, details MVCCLogicalOpDetails) {
+	deletionIntent := false
+	if op == mvccWriteDeletedIntentOpType {
+		deletionIntent = true
+		op = MVCCWriteIntentOpType
+	}
 	if keys.IsLocal(details.Key) {
 		log.Infof(context.Background(), "logLogicalOp-ignored %d: key: %s, ts: %s", op,
 			details.Key.String(), details.Timestamp.AsOfSystemTime())
@@ -99,8 +105,8 @@ func (ol *OpLoggerBatch) logLogicalOp(op MVCCLogicalOpType, details MVCCLogicalO
 		}
 		return
 	}
-	log.Infof(context.Background(), "logLogicalOp-logged %d: key: %s, ts: %s", op,
-		details.Key.String(), details.Timestamp.AsOfSystemTime())
+	log.Infof(context.Background(), "logLogicalOp-logged %d,%t: key: %s, ts: %s", op,
+		deletionIntent, details.Key.String(), details.Timestamp.AsOfSystemTime())
 
 	switch op {
 	case MVCCWriteValueOpType:
