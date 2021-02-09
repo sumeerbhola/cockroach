@@ -57,7 +57,7 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 		eventPauseCount = 0
 	}
 	ns := &nemeses{
-		maxTestColumnCount: 10,
+		maxTestColumnCount: 20,
 		rowCount:           4,
 		db:                 db,
 		// eventMix does not have to add to 100
@@ -73,7 +73,7 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 
 			// eventSplit splits between two random rows (the split is a no-op if it
 			// already exists).
-			eventSplit{}: 5,
+			eventSplit{}: 0,
 
 			// TRANSACTIONS
 			// eventOpenTxn opens an UPSERT or DELETE transaction.
@@ -83,10 +83,10 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 			eventCommit{}: 5,
 
 			// eventRollback simply rolls the outstanding transaction back.
-			eventRollback{}: 5,
+			eventRollback{}: 0,
 
 			// eventPush pushes every open transaction by running a high priority SELECT.
-			eventPush{}: 5,
+			eventPush{}: 0,
 
 			// eventAbort aborts every open transaction by running a high priority DELETE.
 			eventAbort{}: 5,
@@ -127,9 +127,11 @@ func RunNemesis(f TestFeedFactory, db *gosql.DB, isSinkless bool) (Validator, er
 	if _, err := db.Exec(`SET CLUSTER SETTING kv.range_merge.queue_enabled = false`); err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(`ALTER TABLE foo SPLIT AT VALUES ($1)`, ns.rowCount/2); err != nil {
-		return nil, err
-	}
+	/*
+		if _, err := db.Exec(`ALTER TABLE foo SPLIT AT VALUES ($1)`, ns.rowCount/2); err != nil {
+			return nil, err
+		}
+	*/
 
 	// Initialize table rows by repeatedly running the `openTxn` transition,
 	// then randomly either committing or rolling back transactions. This will

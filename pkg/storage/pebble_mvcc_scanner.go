@@ -12,13 +12,19 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"fmt"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -137,6 +143,8 @@ type pebbleMVCCScanner struct {
 	// Number of iterations to try before we do a Seek/SeekReverse. Stays within
 	// [1, maxItersBeforeSeek] and defaults to maxItersBeforeSeek/2 .
 	itersBeforeSeek int
+
+	printDetails bool
 }
 
 // Pool for allocating pebble MVCC Scanners.
@@ -145,6 +153,8 @@ var pebbleMVCCScannerPool = sync.Pool{
 		return &pebbleMVCCScanner{}
 	},
 }
+
+var EnablePrintDetails int32
 
 // init sets bounds on the underlying pebble iterator, and initializes other
 // fields not set by the calling method.
@@ -158,6 +168,9 @@ func (p *pebbleMVCCScanner) init(txn *roachpb.Transaction) {
 		p.txnIgnoredSeqNums = txn.IgnoredSeqNums
 		p.checkUncertainty = p.ts.Less(txn.MaxTimestamp)
 	}
+	// p.printDetails = atomic.LoadInt32(&EnablePrintDetails) != 0 &&
+	//	strings.HasPrefix(p.start.String(), "/Table/53/1/")
+	p.printDetails = strings.HasPrefix(p.start.String(), "/Table/53/1/")
 }
 
 // get iterates exactly once and adds one KV to the result set.
@@ -175,6 +188,14 @@ func (p *pebbleMVCCScanner) get() {
 // iterator is exhausted, or an error is encountered.
 func (p *pebbleMVCCScanner) scan() (*roachpb.Span, error) {
 	p.isGet = false
+	if p.printDetails {
+		buf := make([]byte, 10*1024)
+		n := runtime.Stack(buf, false)
+		buf = buf[:n]
+		log.Infof(context.Background(), "MVCCScanner.scan [%s, %s), reverse: %t, ts: %s",
+			p.start.String(), p.end.String(), p.reverse, p.ts.AsOfSystemTime())
+		// log.Infof(context.Background(), "%s", string(buf))
+	}
 	if p.reverse {
 		if !p.iterSeekReverse(MVCCKey{Key: p.end}) {
 			return nil, p.err
@@ -395,6 +416,15 @@ func (p *pebbleMVCCScanner) getAndAdvance() bool {
 		return p.seekVersion(p.ts, false)
 	}
 
+	logIntent := func(key []byte) {
+		k, err := DecodeMVCCKey(key)
+		if err != nil {
+			log.Infof(context.Background(), "MVCCScanner.logIntents: %s", err.Error())
+		} else {
+			log.Infof(context.Background(), "MVCCScanner.logIntents: k: %s,%s",
+				k.Key.String(), k.Timestamp.AsOfSystemTime())
+		}
+	}
 	if p.inconsistent {
 		// 9. The key contains an intent and we're doing an inconsistent
 		// read at a timestamp newer than the intent. We ignore the
@@ -408,6 +438,9 @@ func (p *pebbleMVCCScanner) getAndAdvance() bool {
 			// intent here as the intents should only correspond to KVs
 			// that lie before the resume key.
 			return false
+		}
+		if p.printDetails {
+			logIntent(p.curRawKey)
 		}
 		p.err = p.intents.Set(p.curRawKey, p.curValue, nil)
 		if p.err != nil {
@@ -429,6 +462,9 @@ func (p *pebbleMVCCScanner) getAndAdvance() bool {
 		// Note that this will trigger an error higher up the stack. We
 		// continue scanning so that we can return all of the intents
 		// in the scan range.
+		if p.printDetails {
+			logIntent(p.curRawKey)
+		}
 		p.err = p.intents.Set(p.curRawKey, p.curValue, nil)
 		if p.err != nil {
 			return false
@@ -610,6 +646,15 @@ func (p *pebbleMVCCScanner) addAndAdvance(rawKey []byte, val []byte) bool {
 	// Don't include deleted versions len(val) == 0, unless we've been instructed
 	// to include tombstones in the results.
 	if len(val) > 0 || p.tombstones {
+		if p.printDetails {
+			k, err := DecodeMVCCKey(rawKey)
+			if err != nil {
+				log.Infof(context.Background(), "MVCCScanner:addAndAdvance: %s", err.Error())
+			} else {
+				log.Infof(context.Background(), "MVCCScanner:addAndAdvance: k: %s,%s v: %s",
+					k.Key.String(), k.Timestamp.AsOfSystemTime(), getFooTableValue(val))
+			}
+		}
 		p.results.put(rawKey, val)
 		if p.targetBytes > 0 && p.results.bytes >= p.targetBytes {
 			// When the target bytes are met or exceeded, stop producing more
@@ -798,4 +843,53 @@ func (p *pebbleMVCCScanner) intentsRepr() []byte {
 		return nil
 	}
 	return p.intents.Repr()
+}
+
+func getFooTableValue(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	var buf strings.Builder
+	var val roachpb.Value
+	val.RawBytes = b
+	data, err := val.GetTuple()
+	if err != nil {
+		return fmt.Sprintf("tag: %d, err: %s", val.GetTag(), err.Error())
+	}
+	i := 0
+	for len(data) > 0 {
+		var varint uint64
+		data, _, varint, err = encoding.DecodeNonsortingUvarint(data)
+		if err != nil {
+			return fmt.Sprintf("decode tag failed on column %d, err %s", i, err.Error())
+		}
+		typ := varint & 0xF
+		switch encoding.Type(typ) {
+		case encoding.Bytes:
+			data, _, varint, err = encoding.DecodeNonsortingUvarint(data)
+			if err != nil {
+				return fmt.Sprintf("decode of length failed on column %d, err %s", i, err.Error())
+			}
+			if len(data) < int(varint) {
+				return fmt.Sprintf("decode failed on column %d, remaining data %d but expected >= %d",
+					i, len(data), varint)
+			}
+			colValue := data[:varint]
+			data = data[varint:]
+			fmt.Fprintf(&buf, "%d:%s ", i, string(colValue))
+		case encoding.Null:
+			fmt.Fprintf(&buf, "%d:null ", i)
+		case encoding.Int:
+			var id int64
+			data, _, id, err = encoding.DecodeNonsortingStdlibVarint(data)
+			if err != nil {
+				return fmt.Sprintf("decode failed on column %d, err %s", i, err.Error())
+			}
+			fmt.Fprintf(&buf, "%d:%d ", i, id)
+		default:
+			return fmt.Sprintf("decode column %d expected bytes or null but got %d", i, typ)
+		}
+		i++
+	}
+	return buf.String()
 }

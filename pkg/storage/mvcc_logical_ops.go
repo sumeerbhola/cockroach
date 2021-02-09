@@ -12,7 +12,6 @@ package storage
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -20,7 +19,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
 // MVCCLogicalOpType is an enum with values corresponding to each of the
@@ -88,14 +86,16 @@ func (ol *OpLoggerBatch) LogLogicalOp(op MVCCLogicalOpType, details MVCCLogicalO
 }
 
 func (ol *OpLoggerBatch) logLogicalOp(op MVCCLogicalOpType, details MVCCLogicalOpDetails) {
-	deletionIntent := false
-	if op == mvccWriteDeletedIntentOpType {
-		deletionIntent = true
-		op = MVCCWriteIntentOpType
-	}
+	/*
+		deletionIntent := false
+		if op == mvccWriteDeletedIntentOpType {
+			deletionIntent = true
+			op = MVCCWriteIntentOpType
+		}
+	*/
 	if keys.IsLocal(details.Key) {
-		log.Infof(context.Background(), "logLogicalOp-ignored %d: key: %s, ts: %s", op,
-			details.Key.String(), details.Timestamp.AsOfSystemTime())
+		// log.Infof(context.Background(), "logLogicalOp-ignored %d: key: %s, ts: %s", op,
+		//	details.Key.String(), details.Timestamp.AsOfSystemTime())
 		// Ignore mvcc operations on local keys.
 		// TODO(sumeer): temporary hack to see why cdc/bank and
 		// TestChangefeedNoBackfill sometimes fail with separated locks. We
@@ -105,8 +105,8 @@ func (ol *OpLoggerBatch) logLogicalOp(op MVCCLogicalOpType, details MVCCLogicalO
 		}
 		return
 	}
-	log.Infof(context.Background(), "logLogicalOp-logged %d,%t: key: %s, ts: %s", op,
-		deletionIntent, details.Key.String(), details.Timestamp.AsOfSystemTime())
+	// log.Infof(context.Background(), "logLogicalOp-logged %d,%t: key: %s, ts: %s", op,
+	//	deletionIntent, details.Key.String(), details.Timestamp.AsOfSystemTime())
 
 	switch op {
 	case MVCCWriteValueOpType:

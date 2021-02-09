@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -1739,9 +1740,16 @@ func mvccPutInternal(
 	if txn := buf.newMeta.Txn; txn != nil {
 		logicalOpDetails.Txn = *txn
 	}
-	if logicalOp == MVCCWriteIntentOpType && value == nil {
-		logicalOp = mvccWriteDeletedIntentOpType
+	keyStr := key.String()
+	if strings.HasPrefix(keyStr, "/Table/53/1/") {
+		log.Infof(ctx, "logLogicalOp %d: key: %s, ts: %s, val: %s", logicalOp,
+			keyStr, writeTimestamp.AsOfSystemTime(), getFooTableValue(value))
 	}
+	/*
+		if logicalOp == MVCCWriteIntentOpType && value == nil {
+			logicalOp = mvccWriteDeletedIntentOpType
+		}
+	*/
 	writer.LogLogicalOp(logicalOp, logicalOpDetails)
 
 	return maybeTooOldErr
@@ -2494,6 +2502,28 @@ func MVCCScan(
 	timestamp hlc.Timestamp,
 	opts MVCCScanOptions,
 ) (MVCCScanResult, error) {
+	printDetails := // atomic.LoadInt32(&EnablePrintDetails) != 0 &&
+		strings.HasPrefix(key.String(), "/Table/53/1/")
+	if printDetails {
+		_, ok := reader.(*pebbleReadOnly)
+		if ok {
+			/*
+				dir := fmt.Sprintf("/Users/sumeer/changefeed/%d", rand.Int())
+				err := pro.parent.CreateCheckpoint(dir)
+				errStr := "no error"
+				if err != nil {
+					errStr = err.Error()
+				}
+			*/
+			log.Infof(context.Background(), "MVCCScanToBytes [%s, %s) ts: %s",
+				key.String(), endKey.String(), timestamp.AsOfSystemTime())
+			// time.Sleep(time.Millisecond * 50)
+			// panic("dying")
+		} else {
+			log.Infof(context.Background(), "MVCCScanToBytes %s: creating checkpoint not pebbleReadOnly",
+				key.String())
+		}
+	}
 	iter := newMVCCIterator(reader, timestamp.IsEmpty(), IterOptions{LowerBound: key, UpperBound: endKey})
 	defer iter.Close()
 	return mvccScanToKvs(ctx, iter, key, endKey, timestamp, opts)
@@ -2507,6 +2537,29 @@ func MVCCScanToBytes(
 	timestamp hlc.Timestamp,
 	opts MVCCScanOptions,
 ) (MVCCScanResult, error) {
+	printDetails := // atomic.LoadInt32(&EnablePrintDetails) != 0 &&
+		strings.HasPrefix(key.String(), "/Table/53/1/")
+	if printDetails {
+		_, ok := reader.(*pebbleReadOnly)
+		if ok {
+			/*
+				dir := fmt.Sprintf("/Users/sumeer/changefeed/%d", rand.Int())
+				err := pro.parent.CreateCheckpoint(dir)
+				errStr := "no error"
+				if err != nil {
+					errStr = err.Error()
+				}
+			*/
+			log.Infof(context.Background(),
+				"MVCCScanToBytes [%s, %s) ts: %s",
+				key.String(), endKey.String(), timestamp.AsOfSystemTime())
+			// time.Sleep(time.Millisecond * 50)
+			// panic("dying")
+		} else {
+			log.Infof(context.Background(), "MVCCScanToBytes %s: creating checkpoint not pebbleReadOnly",
+				key.String())
+		}
+	}
 	iter := newMVCCIterator(reader, timestamp.IsEmpty(), IterOptions{LowerBound: key, UpperBound: endKey})
 	defer iter.Close()
 	return mvccScanToBytes(ctx, iter, key, endKey, timestamp, opts)
@@ -2549,6 +2602,29 @@ func MVCCIterate(
 	opts MVCCScanOptions,
 	f func(roachpb.KeyValue) error,
 ) ([]roachpb.Intent, error) {
+	printDetails := // atomic.LoadInt32(&EnablePrintDetails) != 0 &&
+		strings.HasPrefix(key.String(), "/Table/53/1/")
+	if printDetails {
+		_, ok := reader.(*pebbleReadOnly)
+		if ok {
+			/*
+				dir := fmt.Sprintf("/Users/sumeer/changefeed/%d", rand.Int())
+				err := pro.parent.CreateCheckpoint(dir)
+				errStr := "no error"
+				if err != nil {
+					errStr = err.Error()
+				}
+			*/
+			log.Infof(context.Background(),
+				"MVCCScanToBytes [%s, %s) ts: %s",
+				key.String(), endKey.String(), timestamp.AsOfSystemTime())
+			// time.Sleep(time.Millisecond * 50)
+			// panic("dying")
+		} else {
+			log.Infof(context.Background(), "MVCCScanToBytes %s: creating checkpoint not pebbleReadOnly",
+				key.String())
+		}
+	}
 	iter := newMVCCIterator(
 		reader, timestamp.IsEmpty(), IterOptions{LowerBound: key, UpperBound: endKey})
 	defer iter.Close()
@@ -2876,6 +2952,11 @@ func mvccResolveWriteIntent(
 		if pushed {
 			logicalOp = MVCCUpdateIntentOpType
 		}
+		keyStr := intent.Key.String()
+		if strings.HasPrefix(keyStr, "/Table/53/1/") {
+			log.Infof(ctx, "logLogicalOp %d: key: %s, ts: %s", logicalOp,
+				keyStr, intent.Txn.WriteTimestamp.AsOfSystemTime())
+		}
 		rw.LogLogicalOp(logicalOp, MVCCLogicalOpDetails{
 			Txn:       intent.Txn,
 			Key:       intent.Key,
@@ -2902,6 +2983,11 @@ func mvccResolveWriteIntent(
 		return false, err
 	}
 
+	keyStr := intent.Key.String()
+	if strings.HasPrefix(keyStr, "/Table/53/1/") {
+		log.Infof(ctx, "logLogicalOp %d: key: %s", MVCCAbortIntentOpType,
+			keyStr)
+	}
 	// Log the logical MVCC operation.
 	rw.LogLogicalOp(MVCCAbortIntentOpType, MVCCLogicalOpDetails{
 		Txn: intent.Txn,

@@ -16,8 +16,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -540,8 +543,10 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 			}
 			return rv
 		}
+		atomic.StoreInt32(&storage.EnablePrintDetails, 1)
 		origData := queryToRowsStr(v.sqlDB, `SELECT * FROM `+v.origTable+
 			` AS OF SYSTEM TIME '`+ts.AsOfSystemTime()+`' ORDER BY id`)
+		atomic.StoreInt32(&storage.EnablePrintDetails, 0)
 		fprintData := queryToRowsStr(txn, `SELECT * FROM `+
 			v.fprintTable+` ORDER BY id`)
 		var check2 string
@@ -552,6 +557,12 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 		if err := txn.Commit(); err != nil {
 			panic(err)
 		}
+		atomic.StoreInt32(&storage.EnablePrintDetails, 1)
+		origMVCC := queryToRowsStr(v.sqlDB,
+			`SELECT id, ts, crdb_internal_mvcc_timestamp FROM `+v.origTable+
+				` AS OF SYSTEM TIME '`+ts.AsOfSystemTime()+`' ORDER BY id`)
+		atomic.StoreInt32(&storage.EnablePrintDetails, 0)
+
 		/*
 			origData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` + v.origTable +
 				` AS OF SYSTEM TIME '` + ts.AsOfSystemTime() + `' ORDER BY id`)
@@ -573,6 +584,21 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 		for i := len(origData); i < len(fprintData); i++ {
 			log.Infof(context.Background(), "fpri %d: %s", i, fprintData[i])
 		}
+		for i := 0; i < len(origMVCC); i++ {
+			log.Infof(context.Background(), "origMVCC %d: %s", i, origMVCC[i])
+		}
+		// hopefully logs will be flushed.
+		time.Sleep(2 * time.Second)
+		panic("done")
+		/*
+			if len(origData) != len(fprintData) {
+				atomic.StoreInt32(&storage.EnablePrintDetails, 1)
+				origData = queryToRowsStr(v.sqlDB, `SELECT * FROM `+v.origTable+
+					` AS OF SYSTEM TIME '`+ts.AsOfSystemTime()+`' ORDER BY id`)
+				atomic.StoreInt32(&storage.EnablePrintDetails, 0)
+			}
+		*/
+
 		v.failures = append(v.failures, fmt.Sprintf(
 			`fingerprints did not match at %s: %s vs %s`, ts.AsOfSystemTime(), orig, check))
 	}
