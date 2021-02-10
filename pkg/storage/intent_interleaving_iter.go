@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
@@ -403,7 +402,7 @@ func (i *intentInterleavingIter) Next() {
 				return
 			}
 			i.iterKey = i.iter.UnsafeKey()
-			if util.RaceEnabled {
+			if true {
 				cmp := i.intentKey.Compare(i.iterKey.Key)
 				if cmp != 0 {
 					i.err = errors.Errorf("intent has no provisional value, cmp: %d", cmp)
@@ -428,7 +427,7 @@ func (i *intentInterleavingIter) Next() {
 			if err := i.tryDecodeLockKey(valid); err != nil {
 				return
 			}
-			if util.RaceEnabled && valid {
+			if true && valid {
 				cmp := i.intentKey.Compare(i.iterKey.Key)
 				if cmp <= 0 {
 					i.err = errors.Errorf("intentIter incorrectly positioned, cmp: %d", cmp)
@@ -467,7 +466,7 @@ func (i *intentInterleavingIter) Next() {
 			return
 		}
 		i.intentCmp = +1
-		if util.RaceEnabled && i.intentKey != nil {
+		if true && i.intentKey != nil {
 			cmp := i.intentKey.Compare(i.iterKey.Key)
 			if cmp <= 0 {
 				i.err = errors.Errorf("intentIter incorrectly positioned, cmp: %d", cmp)
@@ -681,7 +680,7 @@ func (i *intentInterleavingIter) Prev() {
 			if i.iterValid {
 				i.iterKey = i.iter.UnsafeKey()
 			}
-			if util.RaceEnabled && i.iterValid {
+			if true && i.iterValid {
 				cmp := i.intentKey.Compare(i.iterKey.Key)
 				if cmp <= 0 {
 					i.err = errors.Errorf("intentIter should be after iter, cmp: %d", cmp)

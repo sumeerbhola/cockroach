@@ -13,7 +13,9 @@ import (
 	gosql "database/sql"
 	gojson "encoding/json"
 	"fmt"
+	"math/rand"
 	"net/url"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -236,9 +238,13 @@ func sinklessTest(testFn func(*testing.T, *gosql.DB, cdctest.TestFeedFactory)) f
 	return func(t *testing.T) {
 		ctx := context.Background()
 		knobs := base.TestingKnobs{DistSQL: &execinfra.TestingKnobs{Changefeed: &TestingKnobs{}}}
+		dir := fmt.Sprintf("/tmp/%d", rand.Int())
+		// dir, dirCleanupFn := testutils.TempDir(t)
+		log.Infof(context.Background(), "Engine dir: %s", dir)
 		s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 			Knobs:       knobs,
 			UseDatabase: `d`,
+			StoreSpecs:  []base.StoreSpec{{InMemory: false, Path: dir}},
 		})
 		defer s.Stopper().Stop(ctx)
 		sqlDB := sqlutils.MakeSQLRunner(db)
@@ -264,6 +270,9 @@ func sinklessTest(testFn func(*testing.T, *gosql.DB, cdctest.TestFeedFactory)) f
 		defer cleanup()
 		f := cdctest.MakeSinklessFeedFactory(s, sink)
 		testFn(t, db, f)
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
 	}
 }
 

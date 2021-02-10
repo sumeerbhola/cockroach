@@ -110,7 +110,7 @@ func (f *txnKVFetcher) getBatchSizeForIdx(batchIdx int) int64 {
 	if !f.useBatchLimit {
 		return 0
 	}
-	kvBatchSize := getKVBatchSize(f.forceProductionKVBatchSize)
+	kvBatchSize := getKVBatchSize(true)
 	if f.firstBatchLimit == 0 || f.firstBatchLimit >= kvBatchSize {
 		return kvBatchSize
 	}

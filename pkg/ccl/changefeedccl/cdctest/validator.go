@@ -557,11 +557,11 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 		if err := txn.Commit(); err != nil {
 			panic(err)
 		}
-		atomic.StoreInt32(&storage.EnablePrintDetails, 1)
+		// atomic.StoreInt32(&storage.EnablePrintDetails, 1)
 		origMVCC := queryToRowsStr(v.sqlDB,
 			`SELECT id, ts, crdb_internal_mvcc_timestamp FROM `+v.origTable+
 				` AS OF SYSTEM TIME '`+ts.AsOfSystemTime()+`' ORDER BY id`)
-		atomic.StoreInt32(&storage.EnablePrintDetails, 0)
+		// atomic.StoreInt32(&storage.EnablePrintDetails, 0)
 
 		/*
 			origData := queryToRowsStr(`SELECT id, ts, crdb_internal_mvcc_timestamp FROM ` + v.origTable +
@@ -588,7 +588,7 @@ func (v *fingerprintValidator) fingerprint(ts hlc.Timestamp) error {
 			log.Infof(context.Background(), "origMVCC %d: %s", i, origMVCC[i])
 		}
 		// hopefully logs will be flushed.
-		time.Sleep(2 * time.Second)
+		time.Sleep(30 * time.Second)
 		panic("done")
 		/*
 			if len(origData) != len(fprintData) {

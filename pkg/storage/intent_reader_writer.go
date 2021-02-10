@@ -85,7 +85,8 @@ func (idw intentDemuxWriter) ClearIntent(
 			TxnUUID:  txnUUID[:],
 		}.ToEngineKey(buf)
 		if txnDidNotUpdateMeta {
-			return buf, idw.w.SingleClearEngineKey(engineKey)
+			return buf, idw.w.ClearEngineKey(engineKey)
+			// return buf, idw.w.SingleClearEngineKey(engineKey)
 		}
 		return buf, idw.w.ClearEngineKey(engineKey)
 	default:
@@ -115,7 +116,7 @@ func (idw intentDemuxWriter) PutIntent(
 	if state == ExistingIntentSeparated && !idw.enabledSeparatedIntents {
 		// Switching this intent from separated to interleaved.
 		if txnDidNotUpdateMeta {
-			if err := idw.w.SingleClearEngineKey(engineKey); err != nil {
+			if err := idw.w.ClearEngineKey(engineKey); err != nil {
 				return buf, err
 			}
 		} else {

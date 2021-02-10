@@ -170,12 +170,15 @@ func (p *pebbleMVCCScanner) init(txn *roachpb.Transaction) {
 	}
 	// p.printDetails = atomic.LoadInt32(&EnablePrintDetails) != 0 &&
 	//	strings.HasPrefix(p.start.String(), "/Table/53/1/")
-	p.printDetails = strings.HasPrefix(p.start.String(), "/Table/53/1/")
+	p.printDetails = strings.HasPrefix(p.start.String(), "/Table/53")
 }
 
 // get iterates exactly once and adds one KV to the result set.
 func (p *pebbleMVCCScanner) get() {
 	p.isGet = true
+	log.Infof(context.Background(), "MVCCScanner.get %s, reverse: %t, ts: %s",
+		p.start.String(), p.reverse, p.ts.AsOfSystemTime())
+
 	p.parent.SeekGE(MVCCKey{Key: p.start})
 	if !p.updateCurrent() {
 		return
@@ -192,8 +195,8 @@ func (p *pebbleMVCCScanner) scan() (*roachpb.Span, error) {
 		buf := make([]byte, 10*1024)
 		n := runtime.Stack(buf, false)
 		buf = buf[:n]
-		log.Infof(context.Background(), "MVCCScanner.scan [%s, %s), reverse: %t, ts: %s",
-			p.start.String(), p.end.String(), p.reverse, p.ts.AsOfSystemTime())
+		log.Infof(context.Background(), "MVCCScanner.scan [%s, %s), reverse: %t, ts: %s, fomr: %t, cu: %t",
+			p.start.String(), p.end.String(), p.reverse, p.ts.AsOfSystemTime(), p.failOnMoreRecent, p.checkUncertainty)
 		// log.Infof(context.Background(), "%s", string(buf))
 	}
 	if p.reverse {
@@ -361,6 +364,9 @@ func (p *pebbleMVCCScanner) getAndAdvance() bool {
 		// value (i.e. one with a timestamp earlier than our read
 		// timestamp).
 		return p.seekVersion(p.ts, false)
+	}
+	if p.printDetails {
+		log.Infof(context.Background(), "getAndAdvance encountered intent for %s", p.curKey.Key.String())
 	}
 
 	if len(p.curValue) == 0 {
@@ -667,6 +673,16 @@ func (p *pebbleMVCCScanner) addAndAdvance(rawKey []byte, val []byte) bool {
 		if p.maxKeys > 0 && p.results.count == p.maxKeys {
 			return false
 		}
+	} else {
+		if p.printDetails {
+			k, err := DecodeMVCCKey(rawKey)
+			if err != nil {
+				log.Infof(context.Background(), "MVCCScanner:addAndAdvance empty val: %s", err.Error())
+			} else {
+				log.Infof(context.Background(), "MVCCScanner:addAndAdvance empty val: k: %s,%s v: %s",
+					k.Key.String(), k.Timestamp.AsOfSystemTime(), getFooTableValue(val))
+			}
+		}
 	}
 	return p.advanceKey()
 }
@@ -687,6 +703,10 @@ func (p *pebbleMVCCScanner) seekVersion(ts hlc.Timestamp, uncertaintyCheck bool)
 			p.incrementItersBeforeSeek()
 			return p.advanceKeyAtNewKey(origKey)
 		}
+		if p.printDetails {
+			log.Infof(context.Background(), "seekVersion encountered k: %s ts: %s",
+				p.curKey.Key.String(), p.curKey.Timestamp.AsOfSystemTime())
+		}
 		if p.curKey.Timestamp.LessEq(ts) {
 			p.incrementItersBeforeSeek()
 			if uncertaintyCheck && p.ts.Less(p.curKey.Timestamp) {
@@ -702,6 +722,10 @@ func (p *pebbleMVCCScanner) seekVersion(ts hlc.Timestamp, uncertaintyCheck bool)
 	}
 	if !bytes.Equal(p.curKey.Key, origKey) {
 		return p.advanceKeyAtNewKey(origKey)
+	}
+	if p.printDetails {
+		log.Infof(context.Background(), "seekVersion encountered after seek k: %s ts: %s",
+			p.curKey.Key.String(), p.curKey.Timestamp.AsOfSystemTime())
 	}
 	if p.curKey.Timestamp.LessEq(ts) {
 		if uncertaintyCheck && p.ts.Less(p.curKey.Timestamp) {
@@ -731,7 +755,9 @@ func (p *pebbleMVCCScanner) updateCurrent() bool {
 
 func (p *pebbleMVCCScanner) iterValid() bool {
 	if valid, err := p.parent.Valid(); !valid {
-		p.err = err
+		if err != nil {
+			p.err = err
+		}
 		return false
 	}
 	return true
