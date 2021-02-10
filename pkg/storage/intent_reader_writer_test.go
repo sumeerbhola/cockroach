@@ -12,19 +12,25 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/datadriven"
+	"github.com/cockroachdb/pebble"
+	"github.com/stretchr/testify/require"
 )
 
 func readPrecedingIntentState(t *testing.T, d *datadriven.TestData) PrecedingIntentState {
@@ -268,4 +274,101 @@ func TestIntentDemuxWriter(t *testing.T) {
 				return fmt.Sprintf("unknown command: %s", d.Cmd)
 			}
 		})
+}
+
+func TestBug(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	pebbleOpts := DefaultPebbleOptions()
+	pebbleOpts.DisableWAL = true
+	pebbleOpts.ReadOnly = true
+	cfg := PebbleConfig{
+		Opts: pebbleOpts,
+	}
+	cfg.StorageConfig = base.StorageConfig{
+		Dir:       "/Users/sumeer/changefeed/engine1/7815618424818949142",
+		MustExist: true,
+	}
+	ctx := context.Background()
+	eng, err := NewPebble(ctx, cfg)
+	require.NoError(t, err)
+	defer eng.Close()
+
+	reader := eng.NewReadOnly().(*pebbleReadOnly)
+	defer reader.Close()
+
+	key := keys.SystemSQLCodec.IndexPrefix(53, 1)
+	endKey := keys.SystemSQLCodec.IndexPrefix(53, 2)
+	log.Infof(ctx, "[%s, %s), [%x, %x)", key.String(), endKey.String(), key, endKey)
+	key0 := roachpb.Key([]byte{0xbd, 0x89, 0x88, 0x88})
+	key2 := roachpb.Key([]byte{0xbd, 0x89, 0x8a, 0x88})
+	log.Infof(ctx, "key0: %s, key2: %s", key0.String(), key2.String())
+
+	uuid := uuid.FromUint128(uint128.FromInts(1, 1))
+	// 1612928388296966000.0000000000
+	meta := enginepb.MVCCMetadata{
+		Txn: &enginepb.TxnMeta{
+			ID:             uuid,
+			WriteTimestamp: hlc.Timestamp{WallTime: 1612928388296966000},
+		},
+		Timestamp:           hlc.LegacyTimestamp{WallTime: 1612928388296966000},
+		Deleted:             false,
+		KeyBytes:            2,
+		ValBytes:            2,
+		RawBytes:            nil,
+		IntentHistory:       nil,
+		MergeTimestamp:      nil,
+		TxnDidNotUpdateMeta: nil,
+	}
+	metaBytes, err := protoutil.Marshal(&meta)
+	require.NoError(t, err)
+	require.Less(t, 0, len(metaBytes))
+	// intentWriter, ok := tryWrapIntentWriter(eng)
+	// require.True(t, ok)
+	// _, err =
+	//	intentWriter.PutIntent(key0, metaBytes, NoExistingIntent, true, uuid, nil)
+	engineKey, _ := LockTableKey{
+		Key:      key0,
+		Strength: lock.Exclusive,
+		TxnUUID:  uuid[:],
+	}.ToEngineKey(nil)
+	err = eng.db.Set(engineKey.Encode(), metaBytes, pebble.NoSync)
+	// err = eng.db.Set(EncodeKey(MVCCKey{Key: key0}), metaBytes, pebble.NoSync)
+	require.NoError(t, err)
+
+	mvccScanner := pebbleMVCCScannerPool.Get().(*pebbleMVCCScanner)
+	defer pebbleMVCCScannerPool.Put(mvccScanner)
+
+	/*
+		I210210 03:39:38.624497 49149 storage/mvcc.go:2963  [n1,s1,r36/1:/Table/5{3-4}] 70142  logLogicalOp 2: key: /Table/53/1/2/0, ts: 1612928378591302000.0000000001 pre: 1, tdnum: false bd898a88
+		I210210 03:39:38.651209 37435 storage/mvcc.go:2995  [n1,s1,r36/1:/Table/5{3-4}] 70170  logLogicalOp 4: key: /Table/53/1/2/0, pre: 1, tdnum: false
+
+		I210210 03:39:48.297650 37435 storage/mvcc.go:1747  [n1,s1,r36/1:/Table/5{3-4}] 75618  logLogicalOp 1: key: /Table/53/1/0/0, ts: 1612928388296966000.0000000000, val: 0:1612928388296966000.0000000000 1:x 2:x pre: 2, tdnum: true bd898888
+		I210210 03:39:48.348054 51578 storage/mvcc.go:2963  [n1,s1,r36/1:/Table/5{3-4}] 75646  logLogicalOp 3: key: /Table/53/1/0/0, ts: 1612928388296966000.0000000000 pre: 1, tdnum: true bd898888
+
+
+		I210210 03:39:48.350530 51858 storage/mvcc.go:2558  [n1,s1,r36/1:/Table/5{3-4}] 75658  MVCCScanToBytes [/Table/53/1, /Table/53/2) ts: 1612928347659843999.2147483647 max: 10000,10485760
+		I210210 03:39:48.350799 51858 storage/pebble_mvcc_scanner.go:198  [-] 75659  MVCCScanner.scan [/Table/53/1, /Table/53/2), reverse: false, ts: 1612928347659843999.2147483647, fomr: false, cu: false
+		I210210 03:39:48.350866 51858 storage/pebble_mvcc_scanner.go:369  [-] 75660  getAndAdvance encountered intent for /Table/53/1/0/0
+		I210210 03:39:48.350927 51858 storage/pebble_mvcc_scanner.go:707  [-] 75661  seekVersion encountered k: /Table/53/1/0/0 ts: 1612928388296966000.0000000000
+		I210210 03:39:48.350954 51858 storage/pebble_mvcc_scanner.go:707  [-] 75662  seekVersion encountered k: /Table/53/1/0/0 ts: 1612928378464494000.0000000000
+		I210210 03:39:48.350975 51858 storage/pebble_mvcc_scanner.go:707  [-] 75663  seekVersion encountered k: /Table/53/1/0/0 ts: 1612928377971235000.0000000000
+		I210210 03:39:48.350996 51858 storage/pebble_mvcc_scanner.go:707  [-] 75664  seekVersion encountered k: /Table/53/1/0/0 ts: 1612928376620809000.0000000000
+		I210210 03:39:48.351017 51858 storage/pebble_mvcc_scanner.go:707  [-] 75665  seekVersion encountered k: /Table/53/1/0/0 ts: 1612928375144313000.0000000000
+		I210210 03:39:48.351056 51858 storage/pebble_mvcc_scanner.go:682  [-] 75666  MVCCScanner:addAndAdvance empty val: k: /Table/53/1/3/0,1612928338963925000.0000000000 v:
+
+		[/Table/53/1, /Table/53/2)
+		/Table/53/1/2/0 bd898a88
+		/Table/53/1/0/0 bd898888
+	*/
+	ts := hlc.Timestamp{WallTime: 1612928347659843999, Logical: 2147483647}
+	opts := MVCCScanOptions{
+		TargetBytes:      10485760,
+		MaxKeys:          10000,
+		Inconsistent:     false,
+		FailOnMoreRecent: false,
+		Tombstones:       false,
+	}
+	_, err = MVCCScanToBytes(ctx, reader, key, endKey, ts, opts)
+	require.NoError(t, err)
 }
