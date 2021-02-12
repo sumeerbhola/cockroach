@@ -164,7 +164,7 @@ func TestPebbleEquivalence(t *testing.T) {
 	skip.UnderRace(t)
 
 	// Have one fixed seed, one user-specified seed, and one random seed.
-	seeds := []int64{123, *seed, rand.Int63()}
+	seeds := []int64{123, rand.Int63()}
 
 	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -196,7 +196,7 @@ func TestPebbleRestarts(t *testing.T) {
 	ctx := context.Background()
 
 	// Have one fixed seed, one user-specified seed, and one random seed.
-	seeds := []int64{123, *seed, rand.Int63()}
+	seeds := []int64{123, rand.Int63()}
 
 	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
