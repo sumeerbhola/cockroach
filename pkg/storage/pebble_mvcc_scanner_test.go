@@ -29,7 +29,7 @@ func TestMVCCScanWithManyVersionsAndSeparatedIntents(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	// Force separated intents for writing.
-	settings := makeSettingsForSeparatedIntents(
+	settings := MakeSettingsForSeparatedIntents(
 		false /* oldClusterVersion */, true /* enabled */)
 	eng := createTestPebbleEngineWithSettings(settings)
 	defer eng.Close()

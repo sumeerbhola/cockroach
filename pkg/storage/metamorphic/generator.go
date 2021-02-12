@@ -21,24 +21,30 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/pebble"
 )
 
 const zipfMax uint64 = 100000
 
-func makeStorageConfig(path string) base.StorageConfig {
+func makeStorageConfig(path string, seed int64) base.StorageConfig {
+	rng := rand.New(rand.NewSource(seed))
+	oldClusterVersion := rng.Intn(2) == 0
+	enabledSeparated := rng.Intn(2) == 0
+	log.Infof(context.Background(),
+		"engine creation is randomly setting oldClusterVersion: %t, enabledSeparated: %t",
+		oldClusterVersion, enabledSeparated)
 	return base.StorageConfig{
 		Dir:      path,
-		Settings: cluster.MakeTestingClusterSettings(),
+		Settings: storage.MakeSettingsForSeparatedIntents(oldClusterVersion, enabledSeparated),
 	}
 }
 
 func createTestPebbleEngine(path string, seed int64) (storage.Engine, error) {
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
+		StorageConfig: makeStorageConfig(path, seed),
 		Opts:          storage.DefaultPebbleOptions(),
 	}
 	pebbleConfig.Opts.Cache = pebble.NewCache(1 << 20)
@@ -49,7 +55,7 @@ func createTestPebbleEngine(path string, seed int64) (storage.Engine, error) {
 
 func createTestPebbleManySSTs(path string, seed int64) (storage.Engine, error) {
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
+		StorageConfig: makeStorageConfig(path, seed),
 		Opts:          storage.DefaultPebbleOptions(),
 	}
 	levels := pebbleConfig.Opts.Levels
@@ -104,7 +110,7 @@ func createTestPebbleVarOpts(path string, seed int64) (storage.Engine, error) {
 	defer opts.Cache.Unref()
 
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
+		StorageConfig: makeStorageConfig(path, seed),
 		Opts:          opts,
 	}
 
