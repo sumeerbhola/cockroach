@@ -900,7 +900,7 @@ CREATE TABLE mnop (
 # intent individually, and intent resolution is fast.
 statement ok
 INSERT INTO mnop (m, n) SELECT i, (1e9 + i/2e4)::float FROM
-  generate_series(1, 1e4) AS i(i)
+  generate_series(1, 2e4) AS i(i)
 
 statement ok
 UPDATE mnop SET o = n::decimal, p = (n * 10)::bigint
@@ -908,22 +908,22 @@ UPDATE mnop SET o = n::decimal, p = (n * 10)::bigint
 query RRR
 SELECT round(variance(n), 2), round(variance(n), 2), round(variance(p)) FROM mnop
 ----
-0.02  0.02  2
+0.08  0.08  8
 
 query RRR
 SELECT round(var_pop(n), 2), round(var_pop(n), 2), round(var_pop(p)) FROM mnop
 ----
-0.02  0.02  2
+0.08  0.08  8
 
 query RRR
 SELECT round(stddev_samp(n), 2), round(stddev(n), 2), round(stddev_samp(p)) FROM mnop
 ----
-0.14  0.14  1
+0.29  0.29  3
 
 query RRR
 SELECT round(stddev_pop(n), 2), round(stddev_pop(n), 2), round(stddev_pop(p)) FROM mnop
 ----
-0.14  0.14  1
+0.29  0.29  3
 
 query RRR
 SELECT avg(1::int)::float, avg(2::float)::float, avg(3::decimal)::float

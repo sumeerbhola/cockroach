@@ -3144,7 +3144,7 @@ func MVCCResolveWriteIntentRangeUsingIter(
 			return num, &roachpb.Span{Key: nextKey.Key, EndKey: encEndKey.Key}, nil
 		}
 
-		iterAndBuf.iter.SeekGE(nextKey)
+		iterAndBuf.iter.SeekIntentRangeGE(nextKey.Key, intent.Txn.ID)
 		if ok, err := iterAndBuf.iter.Valid(); err != nil {
 			return 0, nil, err
 		} else if !ok || !iterAndBuf.iter.UnsafeKey().Less(encEndKey) {

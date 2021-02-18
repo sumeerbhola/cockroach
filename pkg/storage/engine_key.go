@@ -108,6 +108,14 @@ func (k EngineKey) EncodeToBuf(buf []byte) []byte {
 	return buf
 }
 
+func (k EngineKey) EncodePrefixSuffixToBuf(buf []byte) (prefix, suffix []byte) {
+	buf = k.EncodeToBuf(buf)
+	prefixLen := len(k.Key) + 1
+	prefix = buf[:prefixLen]
+	suffix = buf[prefixLen:]
+	return prefix, suffix
+}
+
 func (k EngineKey) encodeToSizedBuf(buf []byte) {
 	copy(buf, k.Key)
 	pos := len(k.Key)

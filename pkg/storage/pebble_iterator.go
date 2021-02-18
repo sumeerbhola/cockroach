@@ -236,6 +236,10 @@ func (p *pebbleIterator) SeekIntentGE(key roachpb.Key, _ uuid.UUID) {
 	p.SeekGE(MVCCKey{Key: key})
 }
 
+func (p *pebbleIterator) SeekIntentRangeGE(key roachpb.Key, _ uuid.UUID) {
+	p.SeekGE(MVCCKey{Key: key})
+}
+
 // SeekEngineKeyGE implements the EngineIterator interface.
 func (p *pebbleIterator) SeekEngineKeyGE(key EngineKey) (valid bool, err error) {
 	p.keyBuf = key.EncodeToBuf(p.keyBuf[:0])
@@ -244,6 +248,23 @@ func (p *pebbleIterator) SeekEngineKeyGE(key EngineKey) (valid bool, err error) 
 		ok = p.iter.SeekPrefixGE(p.keyBuf)
 	} else {
 		ok = p.iter.SeekGE(p.keyBuf)
+	}
+	// NB: A Pebble Iterator always returns ok==false when an error is
+	// present.
+	if ok {
+		return true, nil
+	}
+	return false, p.iter.Error()
+}
+
+func (p *pebbleIterator) SeekEngineKeyExactSuffixGE(key EngineKey) (valid bool, err error) {
+	var suffix []byte
+	p.keyBuf, suffix = key.EncodePrefixSuffixToBuf(p.keyBuf[:0])
+	var ok bool
+	if p.prefix {
+		panic("cannot call SeekEngineKeyExactSuffixGE on a prefix iterator")
+	} else {
+		ok = p.iter.SeekGEUsingPrefixAndSuffix(p.keyBuf, suffix)
 	}
 	// NB: A Pebble Iterator always returns ok==false when an error is
 	// present.

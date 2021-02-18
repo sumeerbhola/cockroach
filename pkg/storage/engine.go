@@ -103,6 +103,7 @@ type MVCCIterator interface {
 	// this can optimize the behavior of the underlying Engine for write heavy
 	// keys by avoiding the need to iterate over many deleted intents.
 	SeekIntentGE(key roachpb.Key, txnUUID uuid.UUID)
+	SeekIntentRangeGE(key roachpb.Key, txnUUID uuid.UUID)
 
 	// Key returns the current key.
 	Key() MVCCKey
@@ -190,6 +191,7 @@ type EngineIterator interface {
 	// SeekEngineKeyGE advances the iterator to the first key in the engine
 	// which is >= the provided key.
 	SeekEngineKeyGE(key EngineKey) (valid bool, err error)
+	SeekEngineKeyExactSuffixGE(key EngineKey) (valid bool, err error)
 	// SeekEngineKeyLT advances the iterator to the first key in the engine
 	// which is < the provided key.
 	SeekEngineKeyLT(key EngineKey) (valid bool, err error)

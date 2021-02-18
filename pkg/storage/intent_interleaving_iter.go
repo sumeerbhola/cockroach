@@ -293,6 +293,39 @@ func (i *intentInterleavingIter) SeekIntentGE(key roachpb.Key, txnUUID uuid.UUID
 	i.computePos()
 }
 
+// TODO: the above should be called SeekExactIntentGE and this SeekRangesIntentGE?
+func (i *intentInterleavingIter) SeekIntentRangeGE(key roachpb.Key, txnUUID uuid.UUID) {
+	i.dir = +1
+	i.valid = true
+
+	if i.constraint != notConstrained {
+		i.checkConstraint(key, false)
+	}
+	var engineKey EngineKey
+	engineKey, i.intentKeyBuf = LockTableKey{
+		Key:      key,
+		Strength: lock.Exclusive,
+		TxnUUID:  txnUUID[:],
+	}.ToEngineKey(i.intentKeyBuf)
+	valid, err := i.intentIter.SeekEngineKeyExactSuffixGE(engineKey)
+	if err != nil {
+		i.err = err
+		i.valid = false
+		return
+	}
+	if err := i.tryDecodeLockKey(valid); err != nil {
+		return
+	}
+	seekKey := key
+	if i.intentKey != nil {
+		// May have skipped ahead to a later key in search of the txnUUID, so use
+		// that key.
+		seekKey = i.intentKey
+	}
+	i.iter.SeekGE(MVCCKey{Key: seekKey})
+	i.computePos()
+}
+
 func (i *intentInterleavingIter) checkConstraint(k roachpb.Key, isExclusiveUpper bool) {
 	kConstraint := constrainedToGlobal
 	if isLocal(k) {

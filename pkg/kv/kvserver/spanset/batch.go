@@ -93,6 +93,11 @@ func (i *MVCCIterator) SeekIntentGE(key roachpb.Key, txnUUID uuid.UUID) {
 	i.checkAllowed(roachpb.Span{Key: key}, true)
 }
 
+func (i *MVCCIterator) SeekIntentRangeGE(key roachpb.Key, txnUUID uuid.UUID) {
+	i.i.SeekIntentRangeGE(key, txnUUID)
+	i.checkAllowed(roachpb.Span{Key: key}, true)
+}
+
 // SeekLT is part of the storage.MVCCIterator interface.
 func (i *MVCCIterator) SeekLT(key storage.MVCCKey) {
 	i.i.SeekLT(key)
@@ -250,6 +255,17 @@ func (i *EngineIterator) Close() {
 // SeekEngineKeyGE is part of the storage.EngineIterator interface.
 func (i *EngineIterator) SeekEngineKeyGE(key storage.EngineKey) (valid bool, err error) {
 	valid, err = i.i.SeekEngineKeyGE(key)
+	if !valid {
+		return valid, err
+	}
+	if err = i.spans.CheckAllowed(SpanReadOnly, roachpb.Span{Key: key.Key}); err != nil {
+		return false, err
+	}
+	return valid, err
+}
+
+func (i *EngineIterator) SeekEngineKeyExactSuffixGE(key storage.EngineKey) (valid bool, err error) {
+	valid, err = i.i.SeekEngineKeyExactSuffixGE(key)
 	if !valid {
 		return valid, err
 	}
