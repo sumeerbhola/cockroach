@@ -64,10 +64,10 @@ func MakeRandomSettingsForSeparatedIntents() *cluster.Settings {
 	log.Infof(context.Background(),
 		"engine creation is randomly setting oldClusterVersion: %t, enabledSeparated: %t",
 		oldClusterVersion, enabledSeparated)
-	return makeSettingsForSeparatedIntents(oldClusterVersion, enabledSeparated)
+	return MakeSettingsForSeparatedIntents(oldClusterVersion, enabledSeparated)
 }
 
-func makeSettingsForSeparatedIntents(oldClusterVersion bool, enabled bool) *cluster.Settings {
+func MakeSettingsForSeparatedIntents(oldClusterVersion bool, enabled bool) *cluster.Settings {
 	version := clusterversion.ByKey(clusterversion.SeparatedIntents)
 	if oldClusterVersion {
 		version = clusterversion.ByKey(clusterversion.V20_2)

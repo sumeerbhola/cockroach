@@ -830,7 +830,7 @@ var opGenerators = []opGenerator{
 			key := m.keyGenerator.parse(args[1]).Key
 			endKey := m.keyGenerator.parse(args[2]).Key
 			startTime := m.pastTSGenerator.parse(args[3])
-			endTime := m.pastTSGenerator.parse(args[3])
+			endTime := m.pastTSGenerator.parse(args[4])
 
 			if endKey.Compare(key) < 0 {
 				key, endKey = endKey, key

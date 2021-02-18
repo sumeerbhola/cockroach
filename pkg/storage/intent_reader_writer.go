@@ -98,6 +98,11 @@ func (idw intentDemuxWriter) ClearIntent(
 	if idw.settings == nil {
 		return nil, 0, errors.AssertionFailedf("intentDemuxWriter not configured with cluster.Setttings")
 	}
+	/*
+		log.Infof(context.Background(), "ClearIntent: key %s, state %d, tdnum %t, uuid %s",
+			key.String(), state, txnDidNotUpdateMeta, txnUUID.String())
+
+	*/
 	switch state {
 	case ExistingIntentInterleaved:
 		return buf, 0, idw.w.ClearUnversioned(key)
@@ -109,7 +114,7 @@ func (idw intentDemuxWriter) ClearIntent(
 			TxnUUID:  txnUUID[:],
 		}.ToEngineKey(buf)
 		if txnDidNotUpdateMeta {
-			return buf, -1, idw.w.SingleClearEngineKey(engineKey)
+			return buf, -1, idw.w.ClearEngineKey(engineKey)
 		}
 		return buf, -1, idw.w.ClearEngineKey(engineKey)
 	default:
@@ -132,6 +137,16 @@ func (idw intentDemuxWriter) PutIntent(
 	if idw.settings == nil {
 		return nil, 0, errors.AssertionFailedf("intentDemuxWriter not configured with cluster.Setttings")
 	}
+	/*
+		log.Infof(context.Background(), "PutIntent: key %s, state %d, tdnum %t, uuid %s",
+			key.String(), state, txnDidNotUpdateMeta, txnUUID.String())
+		if strings.Contains(key.String(), "gpvyqybq") {
+			stackBuf := make([]byte, 1024*20)
+			stackLen := runtime.Stack(stackBuf, false)
+			stackBuf = stackBuf[:stackLen]
+			log.Infof(context.Background(), "%s", string(stackBuf))
+		}
+	*/
 	var writeSeparatedIntents bool
 	if idw.cachedSettingsAreValid {
 		// Fast-path

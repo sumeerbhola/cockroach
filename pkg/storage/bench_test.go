@@ -207,7 +207,7 @@ func BenchmarkIntentScan(b *testing.B) {
 					for _, percentFlushed := range []int{0, 50, 80, 90, 100} {
 						b.Run(fmt.Sprintf("percent-flushed=%d", percentFlushed), func(b *testing.B) {
 							eng := setupMVCCInMemPebbleWithSettings(
-								b, makeSettingsForSeparatedIntents(false, sep))
+								b, MakeSettingsForSeparatedIntents(false, sep))
 							numFlushedVersions := (percentFlushed * numVersions) / 100
 							setupKeysWithIntent(b, eng, numVersions, numFlushedVersions)
 							lower := makeKey(nil, 0)
@@ -267,7 +267,7 @@ func BenchmarkIntentResolution(b *testing.B) {
 					for _, percentFlushed := range []int{0, 50, 80, 90, 100} {
 						b.Run(fmt.Sprintf("percent-flushed=%d", percentFlushed), func(b *testing.B) {
 							eng := setupMVCCInMemPebbleWithSettings(
-								b, makeSettingsForSeparatedIntents(false, sep))
+								b, MakeSettingsForSeparatedIntents(false, sep))
 							numFlushedVersions := (percentFlushed * numVersions) / 100
 							lockUpdate := setupKeysWithIntent(b, eng, numVersions, numFlushedVersions)
 							keys := make([]roachpb.Key, numIntentKeys)
@@ -307,7 +307,7 @@ func BenchmarkIntentRangeResolution(b *testing.B) {
 					for _, percentFlushed := range []int{0, 50, 80, 90, 100} {
 						b.Run(fmt.Sprintf("percent-flushed=%d", percentFlushed), func(b *testing.B) {
 							eng := setupMVCCInMemPebbleWithSettings(
-								b, makeSettingsForSeparatedIntents(false, sep))
+								b, MakeSettingsForSeparatedIntents(false, sep))
 							numFlushedVersions := (percentFlushed * numVersions) / 100
 							lockUpdate := setupKeysWithIntent(b, eng, numVersions, numFlushedVersions)
 							keys := make([]roachpb.Key, numIntentKeys+1)

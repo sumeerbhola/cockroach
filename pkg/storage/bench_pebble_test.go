@@ -41,7 +41,7 @@ func setupMVCCPebble(b testing.TB, dir string) Engine {
 		PebbleConfig{
 			StorageConfig: base.StorageConfig{
 				Dir: dir,
-				Settings: makeSettingsForSeparatedIntents(
+				Settings: MakeSettingsForSeparatedIntents(
 					false /* oldClusterVersion */, true /* enabled */),
 			},
 			Opts: opts,
@@ -53,7 +53,7 @@ func setupMVCCPebble(b testing.TB, dir string) Engine {
 }
 
 func setupMVCCInMemPebble(b testing.TB, loc string) Engine {
-	return setupMVCCInMemPebbleWithSettings(b, makeSettingsForSeparatedIntents(
+	return setupMVCCInMemPebbleWithSettings(b, MakeSettingsForSeparatedIntents(
 		false /* oldClusterVersion */, true /* enabled */))
 }
 

@@ -21,9 +21,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/pebble"
 )
 
@@ -32,8 +32,15 @@ const zipfMax uint64 = 100000
 func makeStorageConfig(path string) base.StorageConfig {
 	return base.StorageConfig{
 		Dir:      path,
-		Settings: cluster.MakeTestingClusterSettings(),
+		Settings: storage.MakeSettingsForSeparatedIntents(true, false),
 	}
+	/*
+		return base.StorageConfig{
+			Dir:      path,
+			Settings: cluster.MakeTestingClusterSettings(),
+		}
+
+	*/
 }
 
 func createTestPebbleEngine(path string, seed int64) (storage.Engine, error) {
@@ -103,9 +110,19 @@ func createTestPebbleVarOpts(path string, seed int64) (storage.Engine, error) {
 	opts.Cache = pebble.NewCache(1 << rngIntRange(rng, 1, 30))
 	defer opts.Cache.Unref()
 
+	oldClusterVersion := rng.Intn(2) == 0
+	enabledSeparated := rng.Intn(2) == 0
+	oldClusterVersion = false
+	enabledSeparated = true
+	log.Infof(context.Background(),
+		"engine creation is setting oldClusterVersion: %t, enabledSeparated: %t",
+		oldClusterVersion, enabledSeparated)
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
-		Opts:          opts,
+		StorageConfig: base.StorageConfig{
+			Dir:      path,
+			Settings: storage.MakeSettingsForSeparatedIntents(oldClusterVersion, enabledSeparated),
+		},
+		Opts: opts,
 	}
 
 	return storage.NewPebble(context.Background(), pebbleConfig)
@@ -323,6 +340,7 @@ func (m *metaTestRunner) generateAndRun(n int) {
 	for i := range m.ops {
 		opRun := &m.ops[i]
 		output := opRun.op.run(m.ctx)
+		// fmt.Printf("generating op %s\n", opRun.name)
 		m.printOp(opRun.name, opRun.args, output)
 	}
 }
@@ -516,6 +534,9 @@ type tsGenerator struct {
 
 func (t *tsGenerator) init(rng *rand.Rand) {
 	t.zipf = rand.NewZipf(rng, 2, 5, zipfMax)
+	// Start with a non-zero WallTime since various parts of MVCC code
+	// uses 0 as a special case.
+	t.lastTS.WallTime = 100
 }
 
 func (t *tsGenerator) generate() hlc.Timestamp {

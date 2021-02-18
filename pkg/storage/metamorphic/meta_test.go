@@ -104,6 +104,7 @@ func runMetaTest(run testRun) {
 		}
 
 		t.Run(strings.Join(engineNames, ","), func(t *testing.T) {
+			log.Infof(context.Background(), "running %s", strings.Join(engineNames, ","))
 			innerTempDir, cleanup := testutils.TempDir(t)
 			defer func() {
 				if !*keep {
@@ -157,14 +158,14 @@ func runMetaTest(run testRun) {
 // for matching outputs by the test suite between different options of Pebble.
 func TestPebbleEquivalence(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
+	// defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	// This test times out with the race detector enabled.
 	skip.UnderRace(t)
 
 	// Have one fixed seed, one user-specified seed, and one random seed.
-	seeds := []int64{123, *seed, rand.Int63()}
+	seeds := []int64{rand.Int63()}
 
 	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
