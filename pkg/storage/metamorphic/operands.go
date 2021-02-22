@@ -289,7 +289,13 @@ func (t *pastTSGenerator) parse(input string) hlc.Timestamp {
 }
 
 func (t *pastTSGenerator) get() string {
-	return t.toString(t.tsGenerator.randomPastTimestamp(t.rng))
+	for {
+		ts := t.tsGenerator.randomPastTimestamp(t.rng)
+		if !ts.IsEmpty() {
+			return t.toString(ts)
+		}
+	}
+	// return t.toString(t.tsGenerator.randomPastTimestamp(t.rng))
 }
 
 func (t *pastTSGenerator) getNew() string {

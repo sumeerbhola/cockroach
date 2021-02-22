@@ -25,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/errors/oserror"
 )
 
 var (
@@ -155,7 +154,7 @@ func runMetaTest(run testRun) {
 
 // TestPebbleEquivalence runs the MVCC Metamorphic test suite, and checks
 // for matching outputs by the test suite between different options of Pebble.
-func TestPebbleEquivalence(t *testing.T) {
+func TestPebbleMetaEquivalence(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
@@ -164,7 +163,7 @@ func TestPebbleEquivalence(t *testing.T) {
 	skip.UnderRace(t)
 
 	// Have one fixed seed, one user-specified seed, and one random seed.
-	seeds := []int64{123, *seed, rand.Int63()}
+	seeds := []int64{rand.Int63()}
 
 	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -187,7 +186,7 @@ func TestPebbleEquivalence(t *testing.T) {
 // TestPebbleRestarts runs the MVCC Metamorphic test suite with restarts
 // enabled, and ensures that the output remains the same across different
 // engine sequences with restarts in between.
-func TestPebbleRestarts(t *testing.T) {
+func TestPebbleMetaRestarts(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	// This test times out with the race detector enabled.
@@ -196,7 +195,7 @@ func TestPebbleRestarts(t *testing.T) {
 	ctx := context.Background()
 
 	// Have one fixed seed, one user-specified seed, and one random seed.
-	seeds := []int64{123, *seed, rand.Int63()}
+	seeds := []int64{rand.Int63()}
 
 	for _, seed := range seeds {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -216,6 +215,7 @@ func TestPebbleRestarts(t *testing.T) {
 	}
 }
 
+/*
 // TestPebbleCheck checks whether the output file specified with --check has
 // matching behavior across rocks/pebble.
 func TestPebbleCheck(t *testing.T) {
@@ -241,3 +241,4 @@ func TestPebbleCheck(t *testing.T) {
 		runMetaTest(run)
 	}
 }
+*/

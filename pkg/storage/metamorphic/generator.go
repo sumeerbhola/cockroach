@@ -516,6 +516,9 @@ type tsGenerator struct {
 
 func (t *tsGenerator) init(rng *rand.Rand) {
 	t.zipf = rand.NewZipf(rng, 2, 5, zipfMax)
+	// Start with a non-zero WallTime since various parts of MVCC code
+	// uses 0 as a special case.
+	t.lastTS.WallTime = 100
 }
 
 func (t *tsGenerator) generate() hlc.Timestamp {
