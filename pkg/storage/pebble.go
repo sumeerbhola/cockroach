@@ -29,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -721,7 +720,7 @@ func (p *Pebble) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions) MVCCIt
 		// Doing defer r.Free() does not inline.
 		iter := r.NewMVCCIterator(iterKind, opts)
 		r.Free()
-		if util.RaceEnabled {
+		if true {
 			iter = wrapInUnsafeIter(iter)
 		}
 		return iter
@@ -730,7 +729,7 @@ func (p *Pebble) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions) MVCCIt
 	if iter == nil {
 		panic("couldn't create a new iterator")
 	}
-	if util.RaceEnabled {
+	if true {
 		iter = wrapInUnsafeIter(iter)
 	}
 	return iter
@@ -1074,6 +1073,13 @@ func (p *Pebble) NewBatch() Batch {
 func (p *Pebble) NewReadOnly() ReadWriter {
 	return &pebbleReadOnly{
 		parent: p,
+		// Defensively set reusable=true. One has to be careful about this since
+		// an accidental false value would cause these iterators, that are value
+		// members of pebbleReadOnly, to be put in the pebbleIterPool.
+		prefixIter:       pebbleIterator{reusable: true},
+		normalIter:       pebbleIterator{reusable: true},
+		prefixEngineIter: pebbleIterator{reusable: true},
+		normalEngineIter: pebbleIterator{reusable: true},
 	}
 }
 
@@ -1346,7 +1352,7 @@ func (p *pebbleReadOnly) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions
 		// Doing defer r.Free() does not inline.
 		iter := r.NewMVCCIterator(iterKind, opts)
 		r.Free()
-		if util.RaceEnabled {
+		if true {
 			iter = wrapInUnsafeIter(iter)
 		}
 		return iter
@@ -1355,7 +1361,7 @@ func (p *pebbleReadOnly) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions
 	if !opts.MinTimestampHint.IsEmpty() {
 		// MVCCIterators that specify timestamp bounds cannot be cached.
 		iter := MVCCIterator(newPebbleIterator(p.parent.db, nil, opts))
-		if util.RaceEnabled {
+		if true {
 			iter = wrapInUnsafeIter(iter)
 		}
 		return iter
@@ -1368,14 +1374,13 @@ func (p *pebbleReadOnly) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions
 	if iter.inuse {
 		panic("iterator already in use")
 	}
+	checkOptionsForIterReuse(opts)
 
 	if iter.iter != nil {
-		iter.setOptions(opts)
+		iter.setBounds(opts.LowerBound, opts.UpperBound)
 	} else {
 		iter.init(p.parent.db, p.iter, opts)
-		// The timestamp hints should be empty given the earlier code, but we are
-		// being defensive.
-		if p.iter == nil && opts.MaxTimestampHint.IsEmpty() && opts.MinTimestampHint.IsEmpty() {
+		if p.iter == nil {
 			// For future cloning.
 			p.iter = iter.iter
 		}
@@ -1384,7 +1389,7 @@ func (p *pebbleReadOnly) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions
 
 	iter.inuse = true
 	var rv MVCCIterator = iter
-	if util.RaceEnabled {
+	if true {
 		rv = wrapInUnsafeIter(rv)
 	}
 	return rv
@@ -1403,14 +1408,13 @@ func (p *pebbleReadOnly) NewEngineIterator(opts IterOptions) EngineIterator {
 	if iter.inuse {
 		panic("iterator already in use")
 	}
+	checkOptionsForIterReuse(opts)
 
 	if iter.iter != nil {
-		iter.setOptions(opts)
+		iter.setBounds(opts.LowerBound, opts.UpperBound)
 	} else {
 		iter.init(p.parent.db, p.iter, opts)
-		// The timestamp hints should be empty given this is an EngineIterator,
-		// but we are being defensive.
-		if p.iter == nil && opts.MaxTimestampHint.IsEmpty() && opts.MinTimestampHint.IsEmpty() {
+		if p.iter == nil {
 			// For future cloning.
 			p.iter = iter.iter
 		}
@@ -1419,6 +1423,15 @@ func (p *pebbleReadOnly) NewEngineIterator(opts IterOptions) EngineIterator {
 
 	iter.inuse = true
 	return iter
+}
+
+func checkOptionsForIterReuse(opts IterOptions) {
+	if !opts.MinTimestampHint.IsEmpty() || !opts.MaxTimestampHint.IsEmpty() {
+		panic("iterator with timestamp hints cannot be reused")
+	}
+	if !opts.Prefix && len(opts.UpperBound) == 0 && len(opts.LowerBound) == 0 {
+		panic("iterator must set prefix or upper bound or lower bound")
+	}
 }
 
 // ConsistentIterators implements the Engine interface.
@@ -1600,13 +1613,13 @@ func (p *pebbleSnapshot) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions
 		// Doing defer r.Free() does not inline.
 		iter := r.NewMVCCIterator(iterKind, opts)
 		r.Free()
-		if util.RaceEnabled {
+		if true {
 			iter = wrapInUnsafeIter(iter)
 		}
 		return iter
 	}
 	iter := MVCCIterator(newPebbleIterator(p.snapshot, nil, opts))
-	if util.RaceEnabled {
+	if true {
 		iter = wrapInUnsafeIter(iter)
 	}
 	return iter

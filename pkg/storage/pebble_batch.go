@@ -16,7 +16,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -207,7 +206,7 @@ func (p *pebbleBatch) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions) M
 		// Doing defer r.Free() does not inline.
 		iter := r.NewMVCCIterator(iterKind, opts)
 		r.Free()
-		if util.RaceEnabled {
+		if true {
 			iter = wrapInUnsafeIter(iter)
 		}
 		return iter
@@ -216,7 +215,7 @@ func (p *pebbleBatch) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions) M
 	if !opts.MinTimestampHint.IsEmpty() {
 		// MVCCIterators that specify timestamp bounds cannot be cached.
 		iter := MVCCIterator(newPebbleIterator(p.batch, nil, opts))
-		if util.RaceEnabled {
+		if true {
 			iter = wrapInUnsafeIter(iter)
 		}
 		return iter
@@ -229,18 +228,17 @@ func (p *pebbleBatch) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions) M
 	if iter.inuse {
 		panic("iterator already in use")
 	}
+	checkOptionsForIterReuse(opts)
 
 	if iter.iter != nil {
-		iter.setOptions(opts)
+		iter.setBounds(opts.LowerBound, opts.UpperBound)
 	} else {
 		if p.batch.Indexed() {
 			iter.init(p.batch, p.iter, opts)
 		} else {
 			iter.init(p.db, p.iter, opts)
 		}
-		// The timestamp hints should be empty given the earlier code, but we are
-		// being defensive.
-		if p.iter == nil && opts.MaxTimestampHint.IsEmpty() && opts.MinTimestampHint.IsEmpty() {
+		if p.iter == nil {
 			// For future cloning.
 			p.iter = iter.iter
 		}
@@ -248,7 +246,7 @@ func (p *pebbleBatch) NewMVCCIterator(iterKind MVCCIterKind, opts IterOptions) M
 
 	iter.inuse = true
 	var rv MVCCIterator = iter
-	if util.RaceEnabled {
+	if true {
 		rv = wrapInUnsafeIter(rv)
 	}
 	return rv
@@ -271,18 +269,17 @@ func (p *pebbleBatch) NewEngineIterator(opts IterOptions) EngineIterator {
 	if iter.inuse {
 		panic("iterator already in use")
 	}
+	checkOptionsForIterReuse(opts)
 
 	if iter.iter != nil {
-		iter.setOptions(opts)
+		iter.setBounds(opts.LowerBound, opts.UpperBound)
 	} else {
 		if p.batch.Indexed() {
 			iter.init(p.batch, p.iter, opts)
 		} else {
 			iter.init(p.db, p.iter, opts)
 		}
-		// The timestamp hints should be empty given this is an EngineIterator,
-		// but we are being defensive.
-		if p.iter == nil && opts.MaxTimestampHint.IsEmpty() && opts.MinTimestampHint.IsEmpty() {
+		if p.iter == nil {
 			// For future cloning.
 			p.iter = iter.iter
 		}

@@ -12,16 +12,23 @@ package storage
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"math"
+	"runtime"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/redact"
 )
 
 // pebbleIterator is a wrapper around a pebble.Iterator that implements the
@@ -80,6 +87,7 @@ func newPebbleIterator(
 	handle pebble.Reader, iterToClone cloneableIter, opts IterOptions,
 ) *pebbleIterator {
 	iter := pebbleIterPool.Get().(*pebbleIterator)
+	iter.reusable = false // defensive
 	iter.init(handle, iterToClone, opts)
 	return iter
 }
@@ -169,34 +177,53 @@ func (p *pebbleIterator) init(handle pebble.Reader, iterToClone cloneableIter, o
 	p.inuse = true
 }
 
-func (p *pebbleIterator) setOptions(opts IterOptions) {
-	// Overwrite any stale options from last time.
-	p.options = pebble.IterOptions{}
-
-	if !opts.MinTimestampHint.IsEmpty() || !opts.MaxTimestampHint.IsEmpty() {
-		panic("iterator with timestamp hints cannot be reused")
+// setBounds is called to change the bounds on a pebbleIterator. Note that
+// this is not the first time that bounds will be passed to the underlying
+// pebble.Iterator. The existing bounds are in p.options.
+func (p *pebbleIterator) setBounds(lowerBound, upperBound roachpb.Key) {
+	// If the roachpb.Key bound is nil, the corresponding bound for the
+	// pebble.Iterator will also be nil. p.options contains the current bounds
+	// known to the pebble.Iterator.
+	boundsChanged := ((lowerBound == nil) != (p.options.LowerBound == nil)) ||
+		((upperBound == nil) != (p.options.UpperBound == nil))
+	if !boundsChanged {
+		// The nil-ness is the same but the values may be different.
+		if lowerBound != nil {
+			// Both must be non-nil. We know that we've appended 0x00 to
+			// p.options.LowerBound, which must be ignored for this comparison.
+			if !bytes.Equal(p.options.LowerBound[:len(p.options.LowerBound)-1], lowerBound) {
+				boundsChanged = true
+			}
+		}
+		if !boundsChanged && upperBound != nil {
+			// Both must be non-nil. We know that we've appended 0x00 to
+			// p.options.UpperBound, which must be ignored for this comparison.
+			if !bytes.Equal(p.options.UpperBound[:len(p.options.UpperBound)-1], upperBound) {
+				boundsChanged = true
+			}
+		}
 	}
-	if !opts.Prefix && len(opts.UpperBound) == 0 && len(opts.LowerBound) == 0 {
-		panic("iterator must set prefix or upper bound or lower bound")
+	if !boundsChanged {
+		return
 	}
-
-	p.prefix = opts.Prefix
+	p.options.LowerBound = nil
+	p.options.UpperBound = nil
 	p.curBuf = (p.curBuf + 1) % 2
 	i := p.curBuf
-	if opts.LowerBound != nil {
+	if lowerBound != nil {
 		// This is the same as
-		// p.options.LowerBound = EncodeKeyToBuf(p.lowerBoundBuf[i][:0], MVCCKey{Key: opts.LowerBound}) .
-		// or EngineKey{Key: opts.LowerBound}.EncodeToBuf(...).
+		// p.options.LowerBound = EncodeKeyToBuf(p.lowerBoundBuf[i][:0], MVCCKey{Key: lowerBound}) .
+		// or EngineKey{Key: lowerBound}.EncodeToBuf(...).
 		// Since we are encoding keys with an empty version anyway, we can just
 		// append the NUL byte instead of calling the above encode functions which
 		// will do the same thing.
-		p.lowerBoundBuf[i] = append(p.lowerBoundBuf[i][:0], opts.LowerBound...)
+		p.lowerBoundBuf[i] = append(p.lowerBoundBuf[i][:0], lowerBound...)
 		p.lowerBoundBuf[i] = append(p.lowerBoundBuf[i], 0x00)
 		p.options.LowerBound = p.lowerBoundBuf[i]
 	}
-	if opts.UpperBound != nil {
+	if upperBound != nil {
 		// Same as above.
-		p.upperBoundBuf[i] = append(p.upperBoundBuf[i][:0], opts.UpperBound...)
+		p.upperBoundBuf[i] = append(p.upperBoundBuf[i][:0], upperBound...)
 		p.upperBoundBuf[i] = append(p.upperBoundBuf[i], 0x00)
 		p.options.UpperBound = p.upperBoundBuf[i]
 	}
@@ -227,7 +254,29 @@ func (p *pebbleIterator) SeekGE(key MVCCKey) {
 	if p.prefix {
 		p.iter.SeekPrefixGE(p.keyBuf)
 	} else {
+		var prevLB, prevUB []byte
+		if p.iter.SeekGELB != nil {
+			prevLB = append(prevLB, p.iter.SeekGELB...)
+		}
+		if p.iter.SeekGEUB != nil {
+			prevUB = append(prevUB, p.iter.SeekGEUB...)
+		}
+		previousSeekKey := append([]byte(nil), p.iter.PrefixOrFullSeekKey...)
 		p.iter.SeekGE(p.keyBuf)
+		if p.iter.KeyUsedWithSeekNoopOpt != nil {
+			var lbStr string
+			if len(prevLB) > 0 {
+				lbStr = roachpb.Key(prevLB[:len(prevLB)-1]).String()
+			}
+			var ubStr string
+			if len(prevUB) > 0 {
+				ubStr = roachpb.Key(prevUB[:len(prevUB)-1]).String()
+			}
+			log.Infof(context.Background(), "noop SeekGE-MVCC prevLB: %s, prevUB: %s",
+				hackySafeString(lbStr), hackySafeString(ubStr))
+
+			p.logKeysForSeekNoop(context.Background(), "SeekGE-MVCC", previousSeekKey, p.iter.KeyUsedWithSeekNoopOpt, true)
+		}
 	}
 }
 
@@ -243,7 +292,11 @@ func (p *pebbleIterator) SeekEngineKeyGE(key EngineKey) (valid bool, err error) 
 	if p.prefix {
 		ok = p.iter.SeekPrefixGE(p.keyBuf)
 	} else {
+		previousSeekKey := append([]byte(nil), p.iter.PrefixOrFullSeekKey...)
 		ok = p.iter.SeekGE(p.keyBuf)
+		if p.iter.KeyUsedWithSeekNoopOpt != nil {
+			p.logKeysForSeekNoop(context.Background(), "SeekGE-EngineKey", previousSeekKey, p.iter.KeyUsedWithSeekNoopOpt, true)
+		}
 	}
 	// NB: A Pebble Iterator always returns ok==false when an error is
 	// present.
@@ -309,6 +362,134 @@ func (p *pebbleIterator) NextEngineKey() (valid bool, err error) {
 	return false, p.iter.Error()
 }
 
+type hackySafeString string
+
+func (h hackySafeString) SafeValue() {}
+
+var _ redact.SafeValue = hackySafeString("")
+
+var logEngineKeyCount int32
+
+func curPosString(iter *pebble.Iterator) string {
+	valid, err := iter.Valid(), iter.Error()
+	errStr := "none"
+	if err != nil {
+		errStr = err.Error()
+	}
+	var valStr string
+	var keyStr string
+	if valid {
+		val := iter.Value()
+		valStr = fmt.Sprintf("%x", val)
+		key := iter.Key()
+		ek, ok := DecodeEngineKey(key)
+		if !ok {
+			panic(fmt.Sprintf("could not decode %x", key))
+		}
+		if ek.IsMVCCKey() {
+			mvccK, err := ek.ToMVCCKey()
+			if err != nil {
+				panic(err)
+			}
+			keyStr = mvccK.String()
+		} else {
+			keyStr = fmt.Sprintf("%s//%x", ek.Key.String(), ek.Version)
+		}
+	}
+	return fmt.Sprintf("valid: %t, err: %s, k: %s, v: %s", valid, errStr, keyStr, valStr)
+}
+
+// TODO:
+// x- for 1 in 100 for EngineKey suffix print the stack trace
+// x- For all in MVCC suffix, print the stack trace
+// x- Print upper bound
+// x- Add SeekGE with disabling and see if that changes the output.
+// - Do Next, Prev before and after disabling and see if that changes things.
+// - Print what iterPosPrev, etc. looks like
+// x- Add panic if iterPosNext or iterPosPrev when opt applies.
+func (p *pebbleIterator) logKeysForSeekNoop(
+	ctx context.Context, op string, prevSeekKey []byte, currSeekKey []byte, doDiag bool,
+) {
+	isEKLog := strings.HasSuffix(op, "EngineKey")
+	printStackTrace := true
+	if isEKLog {
+		prevCount := atomic.AddInt32(&logEngineKeyCount, 1) - 1
+		if prevCount%100 != 0 {
+			printStackTrace = false
+		}
+	}
+	if p.iter.Valid() {
+		printStackTrace = true
+	}
+	if printStackTrace {
+		buf := make([]byte, 20000)
+		stackLen := runtime.Stack(buf, false)
+		buf = buf[:stackLen]
+		log.Infof(ctx, "noop %s stack: %s", hackySafeString(op), hackySafeString(buf))
+	}
+	var lbStr string
+	if len(p.options.LowerBound) > 0 {
+		lbStr = roachpb.Key(p.options.LowerBound[:len(p.options.LowerBound)-1]).String()
+	}
+	var ubStr string
+	if len(p.options.UpperBound) > 0 {
+		ubStr = roachpb.Key(p.options.UpperBound[:len(p.options.UpperBound)-1]).String()
+	}
+	prevEK, ok := DecodeEngineKey(prevSeekKey)
+	if !ok {
+		panic(fmt.Sprintf("could not decode %x", prevSeekKey))
+	}
+	currEK, ok := DecodeEngineKey(currSeekKey)
+	if !ok {
+		panic(fmt.Sprintf("could not decode %x", currSeekKey))
+	}
+	curPosStr := curPosString(p.iter)
+	exerciseDiagnostics := func() string {
+		p.iter.DisableSeekNoopOpt = true
+		optPos := p.iter.Pos
+		// p.iter.SeekGE(currSeekKey)
+		// withoutOptPosStr := curPosString(p.iter)
+		// withoutOptPos := p.iter.Pos
+		p.iter.DisableSeekNoopOpt = false
+		// p.iter.SeekGE(prevSeekKey)
+		// p.iter.SeekGE(currSeekKey)
+		// return fmt.Sprintf("pos: %d, %d, without opt: %s", optPos, withoutOptPos, withoutOptPosStr)
+		return fmt.Sprintf("pos: %d", optPos)
+	}
+	if prevEK.IsMVCCKey() {
+		prevMVCC, err := prevEK.ToMVCCKey()
+		if err != nil {
+			panic(err)
+		}
+		prevMVCCStr := prevMVCC.String()
+		currMVCC, err := currEK.ToMVCCKey()
+		if err != nil {
+			panic(err)
+		}
+		currMVCCStr := currMVCC.String()
+		var diagStr string
+		if doDiag {
+			diagStr = exerciseDiagnostics()
+		}
+		log.Infof(ctx, "noop %s MVCC: prev: %s, curr: %s, %s, lb: %s, ub: %s, diag: %s",
+			hackySafeString(op), hackySafeString(prevMVCCStr),
+			hackySafeString(currMVCCStr), hackySafeString(curPosStr),
+			hackySafeString(lbStr), hackySafeString(ubStr), hackySafeString(diagStr))
+		return
+	}
+	prevEKStr := fmt.Sprintf("%s//%x", prevEK.Key.String(), prevEK.Version)
+	currEKStr := fmt.Sprintf("%s//%x", currEK.Key.String(), currEK.Version)
+	var diagStr string
+	if doDiag {
+		diagStr = exerciseDiagnostics()
+	}
+	log.Infof(ctx,
+		"noop %s EK: prev: %s, curr: %s, %s, lb: %s, ub: %s, diag: %s",
+		hackySafeString(op), hackySafeString(prevEKStr), hackySafeString(currEKStr),
+		hackySafeString(curPosStr), hackySafeString(lbStr), hackySafeString(ubStr),
+		hackySafeString(diagStr))
+}
+
 // NextKey implements the MVCCIterator interface.
 func (p *pebbleIterator) NextKey() {
 	// Even though NextKey() is not allowed for switching direction by the
@@ -332,7 +513,11 @@ func (p *pebbleIterator) NextKey() {
 	if bytes.Equal(p.keyBuf, p.UnsafeKey().Key) {
 		// This is equivalent to:
 		// p.iter.SeekGE(EncodeKey(MVCCKey{p.UnsafeKey().Key.Next(), hlc.Timestamp{}}))
+		previousSeekKey := append([]byte(nil), p.iter.PrefixOrFullSeekKey...)
 		p.iter.SeekGE(append(p.keyBuf, 0, 0))
+		if p.iter.KeyUsedWithSeekNoopOpt != nil {
+			p.logKeysForSeekNoop(context.Background(), "SeekGE-NextKey", previousSeekKey, p.iter.KeyUsedWithSeekNoopOpt, false)
+		}
 	}
 }
 
@@ -387,13 +572,21 @@ func (p *pebbleIterator) SeekLT(key MVCCKey) {
 	p.mvccDirIsReverse = true
 	p.mvccDone = false
 	p.keyBuf = EncodeKeyToBuf(p.keyBuf[:0], key)
+	previousSeekKey := append([]byte(nil), p.iter.PrefixOrFullSeekKey...)
 	p.iter.SeekLT(p.keyBuf)
+	if p.iter.KeyUsedWithSeekNoopOpt != nil {
+		p.logKeysForSeekNoop(context.Background(), "SeekLT-MVCC", previousSeekKey, p.iter.KeyUsedWithSeekNoopOpt, false)
+	}
 }
 
 // SeekEngineKeyLT implements the EngineIterator interface.
 func (p *pebbleIterator) SeekEngineKeyLT(key EngineKey) (valid bool, err error) {
 	p.keyBuf = key.EncodeToBuf(p.keyBuf[:0])
+	previousSeekKey := append([]byte(nil), p.iter.PrefixOrFullSeekKey...)
 	ok := p.iter.SeekLT(p.keyBuf)
+	if p.iter.KeyUsedWithSeekNoopOpt != nil {
+		p.logKeysForSeekNoop(context.Background(), "SeekLT-EngineKey", previousSeekKey, p.iter.KeyUsedWithSeekNoopOpt, false)
+	}
 	// NB: A Pebble Iterator always returns ok==false when an error is
 	// present.
 	if ok {
@@ -624,10 +817,20 @@ func findSplitKeyUsingIterator(
 	return bestSplitKey, nil
 }
 
-// SetUpperBound implements the MVCCIterator interface.
+// SetUpperBound implements the MVCCIterator interface. Note that this is not
+// the first time that bounds will be passed to the underlying
+// pebble.Iterator. The existing bounds are in p.options.
 func (p *pebbleIterator) SetUpperBound(upperBound roachpb.Key) {
 	if upperBound == nil {
 		panic("SetUpperBound must not use a nil key")
+	}
+	if p.options.UpperBound != nil {
+		// We know that we've appended 0x00 to p.options.UpperBound, which must be
+		// ignored for this comparison.
+		if bytes.Equal(p.options.UpperBound[:len(p.options.UpperBound)-1], upperBound) {
+			// Nothing to do.
+			return
+		}
 	}
 	p.curBuf = (p.curBuf + 1) % 2
 	i := p.curBuf

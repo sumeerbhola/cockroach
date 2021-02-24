@@ -30,6 +30,7 @@ pkg/sql/sem/tree/table_ref.go | `ID`
 pkg/sql/sem/tree/table_ref.go | `ColumnID`
 pkg/storage/enginepb/mvcc3.go | `MVCCStatsDelta`
 pkg/storage/enginepb/mvcc3.go | `*MVCCStats`
+pkg/storage/pebble_iterator.go | `hackySafeString`
 pkg/util/hlc/timestamp.go | `Timestamp`
 pkg/util/hlc/timestamp.go | `ClockTimestamp`
 pkg/util/log/redact.go | `reflect.TypeOf(true)`
