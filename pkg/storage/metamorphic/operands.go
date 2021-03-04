@@ -289,7 +289,14 @@ func (t *pastTSGenerator) parse(input string) hlc.Timestamp {
 }
 
 func (t *pastTSGenerator) get() string {
-	return t.toString(t.tsGenerator.randomPastTimestamp(t.rng))
+	// Generate a non-zero timestamp, since zero is used as a special value in
+	// the MVCC code.
+	for {
+		ts := t.tsGenerator.randomPastTimestamp(t.rng)
+		if !ts.IsEmpty() {
+			return t.toString(ts)
+		}
+	}
 }
 
 func (t *pastTSGenerator) getNew() string {

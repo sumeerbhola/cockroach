@@ -67,6 +67,21 @@ func MakeRandomSettingsForSeparatedIntents() *cluster.Settings {
 	return makeSettingsForSeparatedIntents(oldClusterVersion, enabledSeparated)
 }
 
+// MakeRandomSettingsForSeparatedIntentsWithRng makes settings for which it
+// randomly picks whether the cluster understands separated intents, and if
+// yes, whether to write separated intents. Once made, these setting do not
+// change.
+func MakeRandomSettingsForSeparatedIntentsWithRng(rng *rand.Rand) *cluster.Settings {
+	// oldClusterVersion := rng.Intn(2) == 0
+	// enabledSeparated := rng.Intn(2) == 0
+	oldClusterVersion := false
+	enabledSeparated := true
+	log.Infof(context.Background(),
+		"engine creation is randomly setting oldClusterVersion: %t, enabledSeparated: %t",
+		oldClusterVersion, enabledSeparated)
+	return makeSettingsForSeparatedIntents(oldClusterVersion, enabledSeparated)
+}
+
 func makeSettingsForSeparatedIntents(oldClusterVersion bool, enabled bool) *cluster.Settings {
 	version := clusterversion.ByKey(clusterversion.SeparatedIntents)
 	if oldClusterVersion {

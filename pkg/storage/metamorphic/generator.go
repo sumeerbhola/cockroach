@@ -29,7 +29,14 @@ import (
 
 const zipfMax uint64 = 100000
 
-func makeStorageConfig(path string) base.StorageConfig {
+func makeStorageConfig(path string, rng *rand.Rand) base.StorageConfig {
+	return base.StorageConfig{
+		Dir:      path,
+		Settings: storage.MakeRandomSettingsForSeparatedIntentsWithRng(rng),
+	}
+}
+
+func makeStorageConfigHack(path string) base.StorageConfig {
 	return base.StorageConfig{
 		Dir:      path,
 		Settings: cluster.MakeTestingClusterSettings(),
@@ -38,7 +45,8 @@ func makeStorageConfig(path string) base.StorageConfig {
 
 func createTestPebbleEngine(path string, seed int64) (storage.Engine, error) {
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
+		// StorageConfig: makeStorageConfig(path, rand.New(rand.NewSource(seed))),
+		StorageConfig: makeStorageConfigHack(path),
 		Opts:          storage.DefaultPebbleOptions(),
 	}
 	pebbleConfig.Opts.Cache = pebble.NewCache(1 << 20)
@@ -49,7 +57,8 @@ func createTestPebbleEngine(path string, seed int64) (storage.Engine, error) {
 
 func createTestPebbleManySSTs(path string, seed int64) (storage.Engine, error) {
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
+		// StorageConfig: makeStorageConfig(path, rand.New(rand.NewSource(seed))),
+		StorageConfig: makeStorageConfigHack(path),
 		Opts:          storage.DefaultPebbleOptions(),
 	}
 	levels := pebbleConfig.Opts.Levels
@@ -104,7 +113,7 @@ func createTestPebbleVarOpts(path string, seed int64) (storage.Engine, error) {
 	defer opts.Cache.Unref()
 
 	pebbleConfig := storage.PebbleConfig{
-		StorageConfig: makeStorageConfig(path),
+		StorageConfig: makeStorageConfig(path, rng),
 		Opts:          opts,
 	}
 
@@ -515,6 +524,9 @@ type tsGenerator struct {
 }
 
 func (t *tsGenerator) init(rng *rand.Rand) {
+	// Start with a non-zero WallTime since various parts of MVCC code
+	// uses 0 as a special case.
+	t.lastTS.WallTime = 100
 	t.zipf = rand.NewZipf(rng, 2, 5, zipfMax)
 }
 
