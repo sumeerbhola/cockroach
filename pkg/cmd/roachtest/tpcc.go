@@ -42,13 +42,14 @@ const (
 )
 
 type tpccOptions struct {
-	Warehouses     int
-	ExtraRunArgs   string
-	ExtraSetupArgs string
-	Chaos          func() Chaos                // for late binding of stopper
-	During         func(context.Context) error // for running a function during the test
-	Duration       time.Duration               // if zero, TPCC is not invoked
-	SetupType      tpccSetupType
+	Warehouses       int
+	ExtraRunArgs     string
+	ExtraSetupArgs   string
+	Chaos            func() Chaos                // for late binding of stopper
+	During           func(context.Context) error // for running a function during the test
+	Duration         time.Duration               // if zero, TPCC is not invoked
+	SetupType        tpccSetupType
+	DisableCheckTPCC bool
 	// If specified, called to stage+start cockroach. If not
 	// specified, defaults to uploading the default binary to
 	// all nodes, and starting it on all but the last node.
@@ -161,8 +162,10 @@ func runTPCC(ctx context.Context, t *test, c *cluster, opts tpccOptions) {
 	}
 	m.Wait()
 
-	c.Run(ctx, workloadNode, fmt.Sprintf(
-		"./cockroach workload check tpcc --warehouses=%d {pgurl:1}", opts.Warehouses))
+	if !opts.DisableCheckTPCC {
+		c.Run(ctx, workloadNode, fmt.Sprintf(
+			"./cockroach workload check tpcc --warehouses=%d {pgurl:1}", opts.Warehouses))
+	}
 }
 
 // tpccSupportedWarehouses returns our claim for the maximum number of tpcc
@@ -397,6 +400,36 @@ func registerTPCC(r *testRegistry) {
 			})
 		},
 	})
+	r.Add(testSpec{
+		Name:       "tpcc/warehouse=2700",
+		Owner:      OwnerKV,
+		Cluster:    makeClusterSpec(4, cpu(16)),
+		MinVersion: "v19.1.0", // needed for import
+		Run: func(ctx context.Context, t *test, c *cluster) {
+			runTPCC(ctx, t, c, tpccOptions{
+				Warehouses:       2700,
+				Duration:         20 * time.Minute,
+				SetupType:        usingImport,
+				ExtraSetupArgs:   "--checks=false",
+				DisableCheckTPCC: true,
+			})
+		},
+	})
+	r.Add(testSpec{
+		Name:       "tpcc/warehouse=2400",
+		Owner:      OwnerKV,
+		Cluster:    makeClusterSpec(4, cpu(16)),
+		MinVersion: "v19.1.0", // needed for import
+		Run: func(ctx context.Context, t *test, c *cluster) {
+			runTPCC(ctx, t, c, tpccOptions{
+				Warehouses:       2400,
+				Duration:         20 * time.Minute,
+				SetupType:        usingImport,
+				ExtraSetupArgs:   "--checks=false",
+				DisableCheckTPCC: true,
+			})
+		},
+	})
 
 	// Run a few representative tpccbench specs in CI.
 	registerTPCCBenchSpec(r, tpccBenchSpec{
@@ -411,7 +444,7 @@ func registerTPCC(r *testRegistry) {
 		CPUs:  16,
 
 		LoadWarehouses: gceOrAws(cloud, 2500, 3000),
-		EstimatedMax:   gceOrAws(cloud, 2200, 2500),
+		EstimatedMax:   gceOrAws(cloud, 2100, 2500),
 	})
 	registerTPCCBenchSpec(r, tpccBenchSpec{
 		Nodes: 12,

@@ -73,6 +73,6 @@ func makeSettingsForSeparatedIntents(oldClusterVersion bool, enabled bool) *clus
 		version = clusterversion.ByKey(clusterversion.V20_2)
 	}
 	settings := cluster.MakeTestingClusterSettingsWithVersions(version, version, true)
-	SeparatedIntentsEnabled.Override(&settings.SV, enabled)
+	SeparatedIntentsEnabled.Override(&settings.SV, false)
 	return settings
 }

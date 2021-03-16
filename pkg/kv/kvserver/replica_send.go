@@ -13,6 +13,7 @@ package kvserver
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
@@ -33,6 +34,8 @@ func (r *Replica) Send(
 ) (*roachpb.BatchResponse, *roachpb.Error) {
 	return r.sendWithRangeID(ctx, r.RangeID, &ba)
 }
+
+var logRequestDetailsCount uint64
 
 // sendWithRangeID takes an unused rangeID argument so that the range
 // ID will be accessible in stack traces (both in panics and when
@@ -83,6 +86,30 @@ func (r *Replica) sendWithRangeID(
 		}
 	}
 
+	{
+		if atomic.AddUint64(&logRequestDetailsCount, 1)%1000 == 0 {
+			var puts, cputs, scans, intentranges, intents, queryintents int64
+			for _, req := range ba.Requests {
+				switch req.GetInner().(type) {
+				case *roachpb.PutRequest:
+					puts++
+				case *roachpb.ConditionalPutRequest:
+					cputs++
+				case *roachpb.ScanRequest:
+					scans++
+				case *roachpb.ResolveIntentRangeRequest:
+					intentranges++
+				case *roachpb.ResolveIntentRequest:
+					intents++
+				case *roachpb.QueryIntentRequest:
+					queryintents++
+				default:
+				}
+			}
+			log.Infof(ctx, "p: %d, cp: %d, s: %d, ir: %d, i: %d, qi: %d",
+				puts, cputs, scans, intentranges, intents, queryintents)
+		}
+	}
 	// Differentiate between read-write, read-only, and admin.
 	var pErr *roachpb.Error
 	if isReadOnly {
