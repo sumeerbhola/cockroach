@@ -74,7 +74,7 @@ var pebbleIterPool = sync.Pool{
 }
 
 type cloneableIter interface {
-	Clone() (*pebble.Iterator, error)
+	// Clone() (*pebble.Iterator, error)
 }
 
 type testingSetBoundsListener interface {
@@ -127,9 +127,9 @@ func (p *pebbleIterator) init(handle pebble.Reader, iterToClone cloneableIter, o
 		p.options.UpperBound = p.upperBoundBuf[0]
 	}
 
-	doClone := iterToClone != nil
+	// doClone := iterToClone != nil
 	if !opts.MaxTimestampHint.IsEmpty() {
-		doClone = false
+		// doClone = false
 		encodedMinTS := string(encodeTimestamp(opts.MinTimestampHint))
 		encodedMaxTS := string(encodeTimestamp(opts.MaxTimestampHint))
 		p.options.TableFilter = func(userProps map[string]string) bool {
@@ -157,12 +157,12 @@ func (p *pebbleIterator) init(handle pebble.Reader, iterToClone cloneableIter, o
 		panic("min timestamp hint set without max timestamp hint")
 	}
 
-	if doClone {
-		var err error
-		if p.iter, err = iterToClone.Clone(); err != nil {
-			panic(err)
-		}
-		p.iter.SetBounds(p.options.LowerBound, p.options.UpperBound)
+	if false {
+		// var err error
+		// if p.iter, err = iterToClone.Clone(); err != nil {
+		//	panic(err)
+		// }
+		// p.iter.SetBounds(p.options.LowerBound, p.options.UpperBound)
 	} else {
 		if handle == nil {
 			panic("handle is nil for non-cloning path")

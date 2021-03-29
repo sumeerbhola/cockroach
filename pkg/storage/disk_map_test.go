@@ -245,7 +245,7 @@ func TestPebbleMapClose(t *testing.T) {
 	// Verify we have a single sstable.
 	var buf bytes.Buffer
 	fileNums := map[pebble.FileNum]bool{}
-	sstInfos, err := e.db.SSTables()
+	sstInfos := e.db.SSTables()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestPebbleMapClose(t *testing.T) {
 	testutils.SucceedsSoon(t, func() error {
 		lsmBuf.Reset()
 		stillExistBuf.Reset()
-		sstInfos, err := e.db.SSTables()
+		sstInfos := e.db.SSTables()
 		if err != nil {
 			return err
 		}

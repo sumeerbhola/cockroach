@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/pebble"
 )
 
 type intentInterleavingIterConstraint int8
@@ -95,7 +96,9 @@ type intentInterleavingIter struct {
 
 	// intentIter is for iterating over separated intents, so that
 	// intentInterleavingIter can make them look as if they were interleaved.
-	intentIter EngineIterator
+	intentIter     EngineIterator
+	intentIterReal EngineIterator
+
 	// The decoded key from the lock table. This is an unsafe key
 	// in that it is only valid when intentIter has not been
 	// repositioned. It is nil if the intentIter is considered to be
@@ -216,18 +219,24 @@ func newIntentInterleavingIterator(reader Reader, opts IterOptions) MVCCIterator
 	// consistency (certain Reader implementations already ensure consistency,
 	// and we use that when possible to save allocations).
 	var iter MVCCIterator
-	if reader.ConsistentIterators() {
+	if reader.ConsistentIterators() || true {
+		// Take this path for !ConsistentIterators as a hack since don't have
+		// any separated intents.
 		iter = reader.NewMVCCIterator(MVCCKeyIterKind, opts)
-	} else {
-		iter = newMVCCIteratorByCloningEngineIter(intentIter, opts)
 	}
+	/*
+		else {
+			iter = newMVCCIteratorByCloningEngineIter(intentIter, opts)
+		}
+	*/
 	iiIter := intentInterleavingIterPool.Get().(*intentInterleavingIter)
 	*iiIter = intentInterleavingIter{
-		prefix:       opts.Prefix,
-		constraint:   constraint,
-		iter:         iter,
-		intentIter:   intentIter,
-		intentKeyBuf: intentKeyBuf,
+		prefix:         opts.Prefix,
+		constraint:     constraint,
+		iter:           iter,
+		intentIter:     dummyEngineIterator{},
+		intentIterReal: intentIter,
+		intentKeyBuf:   intentKeyBuf,
 	}
 	return iiIter
 }
@@ -610,6 +619,7 @@ func (i *intentInterleavingIter) Value() []byte {
 func (i *intentInterleavingIter) Close() {
 	i.iter.Close()
 	i.intentIter.Close()
+	i.intentIterReal.Close()
 	*i = intentInterleavingIter{}
 	intentInterleavingIterPool.Put(i)
 }
@@ -844,6 +854,7 @@ func (i *intentInterleavingIter) SetUpperBound(key roachpb.Key) {
 	var intentUpperBound roachpb.Key
 	intentUpperBound, i.intentKeyBuf = keys.LockTableSingleKey(key, i.intentKeyBuf)
 	i.intentIter.SetUpperBound(intentUpperBound)
+	i.intentIterReal.SetUpperBound(intentUpperBound)
 }
 
 func (i *intentInterleavingIter) Stats() IteratorStats {
@@ -934,4 +945,39 @@ func (i *unsafeMVCCIterator) mangleBufs() {
 			}
 		}
 	}
+}
+
+type dummyEngineIterator struct{}
+
+func (i dummyEngineIterator) Close() {}
+func (i dummyEngineIterator) SeekEngineKeyGE(key EngineKey) (valid bool, err error) {
+	return false, nil
+}
+func (i dummyEngineIterator) SeekEngineKeyLT(key EngineKey) (valid bool, err error) {
+	return false, nil
+}
+func (i dummyEngineIterator) NextEngineKey() (valid bool, err error) {
+	return false, nil
+}
+func (i dummyEngineIterator) PrevEngineKey() (valid bool, err error) {
+	return false, nil
+}
+func (i dummyEngineIterator) UnsafeEngineKey() (EngineKey, error) {
+	panic("dummyEngineIterator")
+}
+func (i dummyEngineIterator) EngineKey() (EngineKey, error) {
+	panic("dummyEngineIterator")
+}
+func (i dummyEngineIterator) UnsafeRawEngineKey() []byte {
+	panic("dummyEngineIterator")
+}
+func (i dummyEngineIterator) UnsafeValue() []byte {
+	panic("dummyEngineIterator")
+}
+func (i dummyEngineIterator) Value() []byte {
+	panic("dummyEngineIterator")
+}
+func (i dummyEngineIterator) SetUpperBound(roachpb.Key) {}
+func (i dummyEngineIterator) GetRawIter() *pebble.Iterator {
+	panic("dummyEngineIterator")
 }

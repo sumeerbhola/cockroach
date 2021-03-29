@@ -256,7 +256,7 @@ func (t *MVCCValueMerger) MergeOlder(value []byte) error {
 // In case of non-timeseries the values are simply concatenated from old to new. In case
 // of timeseries the values are sorted, deduplicated, and potentially migrated to columnar
 // format. When deduplicating, only the latest sample for a given offset is retained.
-func (t *MVCCValueMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
+func (t *MVCCValueMerger) Finish() ([]byte, io.Closer, error) {
 	isColumnar := false
 	if t.timeSeriesOps == nil && t.rawByteOps == nil {
 		return nil, nil, errors.Errorf("empty merge unsupported")
@@ -383,7 +383,7 @@ func MergeInternalTimeSeriesData(
 			return roachpb.InternalTimeSeriesData{}, err
 		}
 	}
-	resBytes, closer, err := mvccMerger.Finish(!usePartialMerge)
+	resBytes, closer, err := mvccMerger.Finish()
 	if err != nil {
 		return roachpb.InternalTimeSeriesData{}, err
 	}
