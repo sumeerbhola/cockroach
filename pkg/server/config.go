@@ -561,10 +561,12 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			if err != nil {
 				return Engines{}, err
 			}
+			storage.FooTestEngine = eng
 			engines = append(engines, eng)
 		}
 	}
 
+	fmt.Printf("%d storage engines initialized\n", len(engines))
 	log.Infof(ctx, "%d storage engine%s initialized",
 		len(engines), util.Pluralize(int64(len(engines))))
 	for _, s := range details {

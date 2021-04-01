@@ -553,6 +553,10 @@ func NewPebble(ctx context.Context, cfg PebbleConfig) (*Pebble, error) {
 	p.connectEventMetrics(ctx, &cfg.Opts.EventListener)
 	p.eventListener = &cfg.Opts.EventListener
 	p.wrappedIntentWriter = wrapIntentWriter(ctx, p, cfg.Settings, true /* isLongLived */)
+	if cfg.Settings != nil {
+		// log.Infof(ctx, "sep: %t", SeparatedIntentsEnabled.Get(&cfg.Settings.SV))
+		fmt.Printf("sep: %t\n", SeparatedIntentsEnabled.Get(&cfg.Settings.SV))
+	}
 
 	db, err := pebble.Open(cfg.StorageConfig.Dir, cfg.Opts)
 	if err != nil {
@@ -685,6 +689,8 @@ func (p *Pebble) rawGet(key []byte) ([]byte, error) {
 	}
 	return ret, err
 }
+
+var FooTestEngine *Pebble
 
 // GetCompactionStats implements the Engine interface.
 func (p *Pebble) GetCompactionStats() string {

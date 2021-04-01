@@ -1274,16 +1274,19 @@ func BenchmarkJoinReader(b *testing.B) {
 		matchesPerLookupRow int
 	}
 	rightSideColumnDefs := []rightSideColumnDef{
-		{name: "one", matchesPerLookupRow: 1},
-		{name: "four", matchesPerLookupRow: 4},
+		// {name: "one", matchesPerLookupRow: 1},
+		// {name: "four", matchesPerLookupRow: 4},
 		{name: "sixteen", matchesPerLookupRow: 16},
-		{name: "thirtytwo", matchesPerLookupRow: 32},
-		{name: "sixtyfour", matchesPerLookupRow: 64},
+		// {name: "thirtytwo", matchesPerLookupRow: 32},
+		// {name: "sixtyfour", matchesPerLookupRow: 64},
 	}
 	tableSizeToName := func(sz int) string {
 		return fmt.Sprintf("t%d", sz)
 	}
 
+	if storage.FooTestEngine != nil {
+		fmt.Printf("%s\n", storage.FooTestEngine.GetCompactionStats())
+	}
 	createRightSideTable := func(sz int) {
 		colDefs := make([]string, 0, len(rightSideColumnDefs))
 		indexDefs := make([]string, 0, len(rightSideColumnDefs))
@@ -1321,10 +1324,11 @@ func BenchmarkJoinReader(b *testing.B) {
 	createRightSideTable(rightSz)
 	// Create a new txn after the table has been created.
 	flowCtx.Txn = kv.NewTxn(ctx, s.DB(), s.NodeID())
-	for _, reqOrdering := range []bool{true, false} {
+	for _, reqOrdering := range []bool{false} {
 		for columnIdx, columnDef := range rightSideColumnDefs {
-			for _, numLookupRows := range []int{1, 1 << 4 /* 16 */, 1 << 8 /* 256 */, 1 << 10 /* 1024 */, 1 << 12 /* 4096 */, 1 << 13 /* 8192 */, 1 << 14 /* 16384 */, 1 << 15 /* 32768 */, 1 << 16 /* 65,536 */, 1 << 19 /* 524,288 */} {
-				for _, memoryLimit := range []int64{100 << 10, math.MaxInt64} {
+			// for _, numLookupRows := range []int{1, 1 << 4 /* 16 */, 1 << 8 /* 256 */, 1 << 10 /* 1024 */, 1 << 12 /* 4096 */, 1 << 13 /* 8192 */, 1 << 14 /* 16384 */, 1 << 15 /* 32768 */, 1 << 16 /* 65,536 */, 1 << 19 /* 524,288 */} {
+			for _, numLookupRows := range []int{1 << 15 /* 32768 */} {
+				for _, memoryLimit := range []int64{math.MaxInt64} {
 					memoryLimitStr := "mem=unlimited"
 					if memoryLimit != math.MaxInt64 {
 						if !reqOrdering {
@@ -1401,6 +1405,10 @@ func BenchmarkJoinReader(b *testing.B) {
 							b.SetBytes(int64((numLookupRows * 8) + (expectedNumOutputRows * 8)))
 
 							spilled := false
+							fmt.Printf("starting benchmark loop: %d\n", b.N)
+							if storage.FooTestEngine != nil {
+								fmt.Printf("%s\n", storage.FooTestEngine.GetCompactionStats())
+							}
 							for i := 0; i < b.N; i++ {
 								flowCtx.Cfg.TestingKnobs.MemoryLimitBytes = memoryLimit
 								jr, err := newJoinReader(&flowCtx, 0 /* processorID */, &spec, input, &post, &output, lookupJoinReaderType)

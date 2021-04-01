@@ -12,6 +12,7 @@ package kvserver
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
@@ -83,6 +84,29 @@ func (r *Replica) sendWithRangeID(
 		}
 	}
 
+	{
+		var puts, cputs, scans, intentranges, intents, queryintents int64
+		for _, req := range ba.Requests {
+			switch req.GetInner().(type) {
+			case *roachpb.PutRequest:
+				puts++
+			case *roachpb.ConditionalPutRequest:
+				cputs++
+			case *roachpb.ScanRequest:
+				scans++
+			case *roachpb.ResolveIntentRangeRequest:
+				intentranges++
+			case *roachpb.ResolveIntentRequest:
+				intents++
+			case *roachpb.QueryIntentRequest:
+				queryintents++
+			default:
+			}
+		}
+		fmt.Printf("p: %d, cp: %d, s: %d, ir: %d, i: %d, qi: %d\n",
+			puts, cputs, scans, intentranges, intents, queryintents)
+
+	}
 	// Differentiate between read-write, read-only, and admin.
 	var pErr *roachpb.Error
 	if isReadOnly {
