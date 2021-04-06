@@ -65,11 +65,11 @@ func registerKV(r *testRegistry) {
 		t.Status("running workload")
 		m := newMonitor(ctx, c, c.Range(1, nodes))
 		m.Go(func(ctx context.Context) error {
-			concurrency := ifLocal("", " --concurrency="+fmt.Sprint(nodes*64))
+			concurrency := ifLocal("", " --concurrency="+fmt.Sprint(nodes*128))
 
 			splits := " --splits=" + strconv.Itoa(computeNumSplits(opts))
 			if opts.duration == 0 {
-				opts.duration = 10 * time.Minute
+				opts.duration = 60 * time.Minute
 			}
 			duration := " --duration=" + ifLocal("10s", opts.duration.String())
 			readPercent := fmt.Sprintf(" --read-percent=%d", opts.readPercent)

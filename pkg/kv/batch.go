@@ -49,7 +49,9 @@ type Batch struct {
 	// The Header which will be used to send the resulting BatchRequest.
 	// To be modified directly.
 	Header roachpb.Header
-	reqs   []roachpb.RequestUnion
+	// To be modified directly.
+	RequestAdmissionInfo roachpb.RequestAdmissionInfo
+	reqs                 []roachpb.RequestUnion
 	// Set when AddRawRequest is used, in which case using the "other"
 	// operations renders the batch unusable.
 	raw bool

@@ -14,12 +14,14 @@ import (
 	"context"
 	"io"
 
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
@@ -109,7 +111,7 @@ func processInboundStreamHelper(
 
 	if firstMsg != nil {
 		if res := processProducerMessage(
-			ctx, stream, dst, &sd, &draining, firstMsg,
+			ctx, f, stream, dst, &sd, &draining, firstMsg,
 		); res.err != nil || res.consumerClosed {
 			sendErrToConsumer(res.err)
 			return res.err
@@ -148,7 +150,7 @@ func processInboundStreamHelper(
 			}
 
 			if res := processProducerMessage(
-				ctx, stream, dst, &sd, &draining, msg,
+				ctx, f, stream, dst, &sd, &draining, msg,
 			); res.err != nil || res.consumerClosed {
 				sendErrToConsumer(res.err)
 				errChan <- res.err
@@ -184,12 +186,29 @@ func sendDrainSignalToStreamProducer(
 // closed), the caller must return the error to the producer.
 func processProducerMessage(
 	ctx context.Context,
+	flowBase *FlowBase,
 	stream execinfrapb.DistSQL_FlowStreamServer,
 	dst execinfra.RowReceiver,
 	sd *StreamDecoder,
 	draining *bool,
 	msg *execinfrapb.ProducerMessage,
 ) processMessageResult {
+	// TODO: admission control for SQLSQLResponseWork.
+	admission := flowBase.FlowCtx.Cfg.SQLResponseAdmission
+	if admission != nil {
+		err := admission.Admit(ctx, cpupool.AdmissionInfo{
+			TenantID:              roachpb.TenantID{},
+			Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+			OriginalIssueWallTime: flowBase.creationWalltime,
+			RequiresLeaseholder:   false,
+			BypassAdmission:       false,
+		})
+		if err != nil {
+			return processMessageResult{err: err, consumerClosed: false}
+		}
+	} else {
+		log.Infof(ctx, "processProducerMessage does not have AdmissionQueue")
+	}
 	err := sd.AddMessage(ctx, msg)
 	if err != nil {
 		return processMessageResult{

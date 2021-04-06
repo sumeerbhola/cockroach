@@ -2024,6 +2024,46 @@ message Header {
   reserved 7, 10, 12, 14;
 }
 
+// RequestAdmissionInfo ...
+// TODO(sumeer): clean this up. Currently it is just an accumulation of
+// hacks for experiments.
+message RequestAdmissionInfo {
+  // internal is true for intra-KV internal requests. This field is ignored by
+  // the server for tenant requests in serverless settings.
+  bool internal = 1;
+  enum Priority {
+    LOW = 0;
+    NORMAL = 50;
+    HIGH = 100;
+  }
+  // Priority within internal or within a tenant's requests. Internal requests
+  // with HIGH priority may be deemed important enough to bypass admission
+  // control.
+  Priority priority = 2;
+  // original_issue_wall_time is the wall time, typically a unix epoch time
+  // expressed in nanoseconds, of when the root request (sql transaction or
+  // otherwise), was issued. It can be used to give preference to older
+  // requests.
+  int64 original_issue_wall_time = 3;
+  // requires_leaseholder is true iff the request needs to execute on the
+  // leaseholder replica of the range. This is passed explicitly so that KV
+  // admission control can respond with error for requests whose leaseholder
+  // moved while the request was queued. In all cases, if the range is no
+  // longer at this node, a queued request will receive an error response.
+  bool requires_leaseholder = 4;
+  // from_sql is true if this request is being sent from the sql layer.
+  // BatchRequests can cause other BatchRequests (e.g. to PushTransaction,
+  // which may result in yet abother BatchRequest, to ResolveIndeterminateCommit).
+  // These can cause a deadlock when using slot based admission control.
+  bool from_sql = 5;
+  // TODO(sumeer): currently there is no provision for requests being retried
+  // at less busy replicas. That can be supported by adding an exponentially
+  // increasing admission deadline. This will require some wider code changes
+  // to make it work end-to-end with distsql, since distsql leaf requests are
+  // issued to the local KV node, and the distsql root->leaf is where we will
+  // need to retry at less loaded nodes.
+}
+
 // A BatchRequest contains one or more requests to be executed in
 // parallel, or if applicable (based on write-only commands and
 // range-locality), as a single update.
@@ -2032,6 +2072,7 @@ message BatchRequest {
 
   Header header = 1 [(gogoproto.nullable) = false, (gogoproto.embed) = true];
   repeated RequestUnion requests = 2 [(gogoproto.nullable) = false];
+  RequestAdmissionInfo admission_info = 3 [(gogoproto.nullable) = false];
 }
 
 // A BatchResponse contains one or more responses, one per request
@@ -2120,6 +2161,9 @@ message RangeFeedRequest {
   // with_diff specifies whether RangeFeedValue updates should contain the
   // previous value that was overwritten.
   bool with_diff = 3;
+  // admission_info is used only at the start of the range feed stream, since
+  // the initial catch-up scan be expensive.
+  RequestAdmissionInfo admission_info = 4 [(gogoproto.nullable) = false];
 }
 
 // RangeFeedValue is a variant of RangeFeedEvent that represents an update to

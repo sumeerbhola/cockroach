@@ -35,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlutil"
 	"github.com/cockroachdb/cockroach/pkg/storage/cloud"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -156,6 +157,8 @@ type ServerConfig struct {
 	// SQLStatsResetter is an interface used to reset SQL stats without the need to
 	// introduce dependency on the sql package.
 	SQLStatsResetter tree.SQLStatsResetter
+
+	SQLResponseAdmission *cpupool.AdmissionQueue
 }
 
 // RuntimeStats is an interface through which the rowexec layer can get

@@ -21,11 +21,13 @@ import (
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/col/colserde"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecop"
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -125,6 +127,9 @@ type Inbox struct {
 		data []*array.Data
 		b    coldata.Batch
 	}
+
+	SQLResponseAdmission *cpupool.AdmissionQueue
+	creationWalltime     int64
 }
 
 var _ colexecop.Operator = &Inbox{}
@@ -155,6 +160,7 @@ func NewInbox(
 		deserializationStopWatch: timeutil.NewStopWatch(),
 	}
 	i.scratch.data = make([]*array.Data, len(typs))
+	i.creationWalltime = time.Now().UnixNano()
 	return i, nil
 }
 
@@ -287,6 +293,21 @@ func (i *Inbox) Next(ctx context.Context) coldata.Batch {
 	for {
 		i.deserializationStopWatch.Stop()
 		m, err := i.stream.Recv()
+		// Admission control for SQLSQLResponseWork
+		if i.SQLResponseAdmission != nil {
+			err := i.SQLResponseAdmission.Admit(ctx, cpupool.AdmissionInfo{
+				TenantID:              roachpb.TenantID{},
+				Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+				OriginalIssueWallTime: i.creationWalltime,
+				RequiresLeaseholder:   false,
+				BypassAdmission:       false,
+			})
+			if err != nil {
+				colexecerror.ExpectedError(err)
+			}
+		} else {
+			log.Infof(ctx, "Inbox does not have AdmissionQueue")
+		}
 		i.deserializationStopWatch.Start()
 		atomic.AddInt64(&i.statsAtomics.numMessages, 1)
 		if err != nil {

@@ -181,6 +181,7 @@ func (sq *splitQueue) processAttempt(
 	desc := r.Desc()
 	// First handle the case of splitting due to zone config maps.
 	if splitKey := sysCfg.ComputeSplitKey(ctx, desc.StartKey, desc.EndKey); splitKey != nil {
+		// Skips admission control.
 		if _, err := r.adminSplitWithDescriptor(
 			ctx,
 			roachpb.AdminSplitRequest{
@@ -205,6 +206,7 @@ func (sq *splitQueue) processAttempt(
 	size := r.GetMVCCStats().Total()
 	maxBytes := r.GetMaxBytes()
 	if maxBytes > 0 && float64(size)/float64(maxBytes) > 1 {
+		// Skips admission control.
 		_, err := r.adminSplitWithDescriptor(
 			ctx,
 			roachpb.AdminSplitRequest{},
@@ -240,6 +242,7 @@ func (sq *splitQueue) processAttempt(
 		if expDelay := SplitByLoadMergeDelay.Get(&sq.store.cfg.Settings.SV); expDelay > 0 {
 			expTime = sq.store.Clock().Now().Add(expDelay.Nanoseconds(), 0)
 		}
+		// Skips admission control.
 		if _, pErr := r.adminSplitWithDescriptor(
 			ctx,
 			roachpb.AdminSplitRequest{

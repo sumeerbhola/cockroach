@@ -1273,6 +1273,11 @@ func (nl *NodeLiveness) updateLivenessAttempt(
 		if err := v.SetProto(&update.newLiveness); err != nil {
 			log.Fatalf(ctx, "failed to marshall proto: %s", err)
 		}
+		// Partially overwrite the admission info set by txn.NewBatch().
+		b.RequestAdmissionInfo = roachpb.RequestAdmissionInfo{
+			Internal: true,
+			Priority: roachpb.RequestAdmissionInfo_HIGH,
+		}
 		b.CPut(key, v, oldRaw)
 		// Use a trigger on EndTxn to indicate that node liveness should be
 		// re-gossiped. Further, require that this transaction complete as a one

@@ -39,6 +39,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -170,6 +171,8 @@ type Node struct {
 	additionalStoreInitCh chan struct{}
 
 	perReplicaServer kvserver.Server
+
+	admission *cpupool.AdmissionQueue
 }
 
 var _ roachpb.InternalServer = &Node{}
@@ -899,8 +902,53 @@ func (n *Node) Batch(
 	// log tags more expensive and makes local calls differ from remote calls.
 	ctx = n.storeCfg.AmbientCtx.ResetAndAnnotateCtx(ctx)
 
+	// isAdmin=true implies high priority, for now. Confirm that this is not
+	// allowing too much to bypass admission control. Also, whether we can rely
+	// on this sufficiently and avoid changing most calling clients to
+	// explicitly set Internal=true and HIGH priority on RequestAdmissionInfo.
+	isAdmin := args.IsAdmin()
+	admissionInfo := cpupool.AdmissionInfo{
+		TenantID:              roachpb.TenantID{}, // TODO
+		Priority:              args.AdmissionInfo.Priority,
+		OriginalIssueWallTime: args.AdmissionInfo.OriginalIssueWallTime,
+		RequiresLeaseholder:   args.AdmissionInfo.RequiresLeaseholder,
+		RangeID:               int64(args.RangeID),
+		BypassAdmission:       false,
+	}
+	if args.AdmissionInfo.OriginalIssueWallTime == 0 && !args.AdmissionInfo.Internal {
+		// Hack. Not initialized. We've intercepted most things on the client, but
+		// may have overlooked something. Do the same thing we do on the
+		// client-side in DB.Run.
+		admissionInfo.Priority = roachpb.RequestAdmissionInfo_NORMAL
+		admissionInfo.OriginalIssueWallTime = time.Now().UnixNano()
+		n.admission.FakedAdmissionInfo()
+	}
+	// TODO: don't do this if the tenant id is not the system tenant.
+	if isAdmin || (args.AdmissionInfo.Internal && args.AdmissionInfo.Priority == roachpb.RequestAdmissionInfo_HIGH) ||
+		(!args.AdmissionInfo.FromSql) {
+		admissionInfo.BypassAdmission = true
+	}
+	if n.admission != nil {
+		// log.Infof(ctx, "Node.Batch: attempting admission")
+		err := n.admission.Admit(ctx, admissionInfo)
+		if err != nil {
+			// log.Infof(ctx, "Node.Batch: admission err: %s", err)
+			return nil, err
+		}
+		// log.Infof(ctx, "Node.Batch: admitted")
+	} else {
+		log.Infof(ctx, "Node.Batch does not have AdmissionQueue")
+	}
+	start := time.Now()
 	br, err := n.batchInternal(ctx, args)
-
+	if n.admission != nil {
+		// log.Infof(ctx, "Node.Batch: admitted work done")
+		n.admission.AdmittedWorkDone()
+	}
+	dur := time.Now().Sub(start)
+	if dur > 100*time.Millisecond {
+		log.Infof(ctx, "Node.Batch: slow evaluation %s", redact.Safe(dur.String()))
+	}
 	// We always return errors via BatchResponse.Error so structure is
 	// preserved; plain errors are presumed to be from the RPC
 	// framework and not from cockroach.

@@ -67,6 +67,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sqlmigrations"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/cloud"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -152,6 +153,8 @@ type sqlServerOptionalKVArgs struct {
 	// Used by backup/restore.
 	externalStorage        cloud.ExternalStorageFactory
 	externalStorageFromURI cloud.ExternalStorageFromURIFactory
+
+	sqlResponseAdmission *cpupool.AdmissionQueue
 }
 
 // sqlServerOptionalTenantArgs are the arguments supplied to newSQLServer which
@@ -432,8 +435,9 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		ExternalStorage:        cfg.externalStorage,
 		ExternalStorageFromURI: cfg.externalStorageFromURI,
 
-		RangeCache:     cfg.distSender.RangeDescriptorCache(),
-		HydratedTables: hydratedTablesCache,
+		RangeCache:           cfg.distSender.RangeDescriptorCache(),
+		HydratedTables:       hydratedTablesCache,
+		SQLResponseAdmission: cfg.sqlResponseAdmission,
 	}
 	cfg.TempStorageConfig.Mon.SetMetrics(distSQLMetrics.CurDiskBytesCount, distSQLMetrics.MaxDiskBytesHist)
 	if distSQLTestingKnobs := cfg.TestingKnobs.DistSQL; distSQLTestingKnobs != nil {

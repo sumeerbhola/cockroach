@@ -13,6 +13,7 @@ package flowinfra
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
@@ -170,6 +171,8 @@ type FlowBase struct {
 
 	// spec is the request that produced this flow. Only used for debugging.
 	spec *execinfrapb.FlowSpec
+
+	creationWalltime int64
 }
 
 // Setup is part of the Flow interface.
@@ -218,6 +221,7 @@ func NewFlowBase(
 		localProcessors:  localProcessors,
 	}
 	base.status = FlowNotStarted
+	base.creationWalltime = time.Now().UnixNano()
 	return base
 }
 

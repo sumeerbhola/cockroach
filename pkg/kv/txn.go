@@ -49,6 +49,7 @@ type Txn struct {
 	// span. This sets the SystemConfigTrigger on EndTxnRequest.
 	systemConfigTrigger bool
 
+	TxnCreationTime int64
 	// mu holds fields that need to be synchronized for concurrent request execution.
 	mu struct {
 		syncutil.Mutex
@@ -133,6 +134,7 @@ func NewTxnFromProto(
 	}
 
 	txn := &Txn{db: db, typ: typ, gatewayNodeID: gatewayNodeID}
+	txn.TxnCreationTime = now.WallTime
 	txn.mu.ID = proto.ID
 	txn.mu.userPriority = roachpb.NormalUserPriority
 	txn.mu.sender = db.factory.RootTransactionalSender(proto, txn.mu.userPriority)
@@ -156,6 +158,9 @@ func NewLeafTxn(
 	txn.mu.ID = tis.Txn.ID
 	txn.mu.userPriority = roachpb.NormalUserPriority
 	txn.mu.sender = db.factory.LeafTransactionalSender(tis)
+	// Use ReadTimestamp (this is not ideal). We need this for calls this txn
+	// will make locally to KV, that should go through admission control.
+	txn.TxnCreationTime = tis.Txn.ReadTimestamp.WallTime
 	return txn
 }
 
@@ -358,7 +363,16 @@ func (txn *Txn) DisablePipelining() error {
 
 // NewBatch creates and returns a new empty batch object for use with the Txn.
 func (txn *Txn) NewBatch() *Batch {
-	return &Batch{txn: txn}
+	b := &Batch{
+		txn: txn,
+		RequestAdmissionInfo: roachpb.RequestAdmissionInfo{
+			Internal:              false,
+			Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+			OriginalIssueWallTime: txn.TxnCreationTime,
+			RequiresLeaseholder:   true,
+		},
+	}
+	return b
 }
 
 // Get retrieves the value for a key, returning the retrieved key/value or an
@@ -609,6 +623,12 @@ func (txn *Txn) Run(ctx context.Context, b *Batch) error {
 
 func (txn *Txn) commit(ctx context.Context) error {
 	var ba roachpb.BatchRequest
+	ba.AdmissionInfo = roachpb.RequestAdmissionInfo{
+		Internal:              false,
+		Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+		OriginalIssueWallTime: txn.TxnCreationTime,
+		RequiresLeaseholder:   true,
+	}
 	ba.Add(endTxnReq(true /* commit */, txn.deadline(), txn.systemConfigTrigger))
 	_, pErr := txn.Send(ctx, ba)
 	if pErr == nil {

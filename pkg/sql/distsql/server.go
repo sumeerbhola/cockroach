@@ -246,6 +246,12 @@ func (ds *ServerImpl) setupFlow(
 		}
 		// The flow will run in a LeafTxn because we do not want each distributed
 		// Txn to heartbeat the transaction.
+		// TODO: this is where we should do admission for
+		// SQLStatementLeafStartWork. We may want to transfer the txnCreationTime
+		// from the Txn struct down to the leaf for better starvation protection
+		// than using the ReadTimestamp in the Transaction proto, since the latter
+		// can be pushed. For benchmarks which have a fixed number of clients
+		// in a closed loop, we can ignore admission of sql root and leaf work.
 		return kv.NewLeafTxn(ctx, ds.DB, req.Flow.Gateway, tis), nil
 	}
 

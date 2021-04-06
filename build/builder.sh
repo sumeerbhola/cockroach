@@ -181,7 +181,7 @@ set +e
 DATADRIVEN_QUIET_LOG=${DATADRIVEN_QUIET_LOG-true}
 
 # shellcheck disable=SC2086
-docker run --init --privileged -i ${tty-} --rm \
+docker run --init -i ${tty-} --rm \
   -u "$uid:$gid" \
   ${vols} \
   --workdir="/go/src/github.com/cockroachdb/cockroach" \

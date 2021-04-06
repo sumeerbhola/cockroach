@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
+
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
 // CumulativeNormalizedRunnableGoroutines returns the sum, over all seconds
@@ -27,7 +29,7 @@ import (
 // The number of runnable goroutines is sampled frequently, and an average is
 // calculated and accumulated once per second.
 func CumulativeNormalizedRunnableGoroutines() float64 {
-	rawValue := atomic.LoadUint64(&total)
+	rawValue := atomic.LoadUint64(&runnableInfo.total)
 
 	procs := runtime.GOMAXPROCS(0)
 
@@ -50,9 +52,21 @@ const reportingPeriod = time.Second
 const scale = 1000
 const invScale = 1.0 / scale
 
-// total accumulates the sum of the average number of runnable goroutines per
-// reportingPeriod, multiplied by scale.
-var total uint64
+type RunnableCountCallback func(runnable int, maxProcs int)
+
+var runnableInfo struct {
+	// total accumulates the sum of the average number of runnable goroutines per
+	// reportingPeriod, multiplied by scale.
+	total uint64
+	mu    syncutil.Mutex
+	cb    RunnableCountCallback
+}
+
+func RegisterRunnableCountCallback(cb RunnableCountCallback) {
+	runnableInfo.mu.Lock()
+	defer runnableInfo.mu.Unlock()
+	runnableInfo.cb = cb
+}
 
 func init() {
 	go func() {
@@ -65,14 +79,22 @@ func init() {
 			t := <-ticker.C
 			if t.Sub(lastTime) > reportingPeriod || t.Before(lastTime) {
 				if numSamples > 0 {
-					atomic.AddUint64(&total, uint64(sum*scale/numSamples))
+					atomic.AddUint64(&runnableInfo.total, uint64(sum*scale/numSamples))
 				}
 				lastTime = t
 				sum = 0
 				numSamples = 0
 			}
-			sum += numRunnableGoroutines()
+			nrg := numRunnableGoroutines()
+			sum += nrg
 			numSamples++
+			procs := runtime.GOMAXPROCS(0)
+			runnableInfo.mu.Lock()
+			cb := runnableInfo.cb
+			runnableInfo.mu.Unlock()
+			if cb != nil {
+				cb(nrg, procs)
+			}
 		}
 	}()
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
@@ -97,6 +98,9 @@ type txnKVFetcher struct {
 
 	// If set, we will use the production value for kvBatchSize.
 	forceProductionKVBatchSize bool
+
+	originalIssueWallTime  int64
+	sqlKVResponseAdmission *cpupool.AdmissionQueue
 }
 
 var _ kvBatchFetcher = &txnKVFetcher{}
@@ -220,10 +224,13 @@ func makeKVBatchFetcher(
 		}
 		return res, nil
 	}
-	return makeKVBatchFetcherWithSendFunc(
+	fetcher, err := makeKVBatchFetcherWithSendFunc(
 		sendFn, spans, reverse, useBatchLimit, firstBatchLimit, lockStrength,
 		lockWaitPolicy, mon, forceProductionKVBatchSize,
 	)
+	fetcher.originalIssueWallTime = txn.TxnCreationTime
+	fetcher.sqlKVResponseAdmission = txn.DB().SQLKVResponseAdmission
+	return fetcher, err
 }
 
 // makeKVBatchFetcherWithSendFunc is like makeKVBatchFetcher but uses a custom
@@ -376,9 +383,30 @@ func (f *txnKVFetcher) fetch(ctx context.Context) error {
 	// Reset spans in preparation for adding resume-spans below.
 	f.spans = f.spans[:0]
 
+	ba.AdmissionInfo = roachpb.RequestAdmissionInfo{
+		Internal:              false,
+		Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+		OriginalIssueWallTime: f.originalIssueWallTime,
+		RequiresLeaseholder:   false,
+		FromSql:               true,
+	}
 	br, err := f.sendFn(ctx, ba)
 	if err != nil {
 		return err
+	}
+	if f.sqlKVResponseAdmission != nil {
+		err = f.sqlKVResponseAdmission.Admit(ctx, cpupool.AdmissionInfo{
+			TenantID:              roachpb.TenantID{},
+			Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+			OriginalIssueWallTime: f.originalIssueWallTime,
+			RequiresLeaseholder:   false,
+			BypassAdmission:       false,
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Infof(ctx, "txnKVFetcher does not have AdmissionQueue")
 	}
 	if br != nil {
 		f.responses = br.Responses

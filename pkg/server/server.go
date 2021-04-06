@@ -78,7 +78,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/ui"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
+	"github.com/cockroachdb/cockroach/pkg/util/goschedstats"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -223,6 +225,16 @@ func (e *externalStorageBuilder) makeExternalStorageFromURI(
 	}
 	return cloudimpl.ExternalStorageFromURI(ctx, uri, e.conf, e.settings, e.blobClientFactory, user, e.ie, e.db)
 }
+
+var cpuPoolCapKVSlotsSetting = settings.RegisterIntSetting(
+	"cpu_pool.cap_kv_slots", "cap on number of slots for KV requests", 500,
+	settings.PositiveInt)
+
+var cpuPoolFeedUnderloaded = settings.RegisterBoolSetting(
+	"cpu_pool.feed_underloaded", "hack to feed underloaded signal", false)
+
+var cpuPoolLoadHistoryLength = settings.RegisterIntSetting(
+	"cpu_pool.load_history_length", "history length for overload", 1, settings.PositiveInt)
 
 // NewServer creates a Server from a server.Config.
 func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
@@ -417,10 +429,52 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	}
 	tcsFactory := kvcoord.NewTxnCoordSenderFactory(txnCoordSenderFactoryCfg, distSender)
 
+	cpuPool := cpupool.NewCPUPool(
+		[3]int{1, 1, 1}, [3]int{int(cpuPoolCapKVSlotsSetting.Get(&st.SV)), 1, 1}, 200)
+
+	go func() {
+		// Temporary hack to refill the cpuPool's queue tokens.
+		ticker := time.NewTicker(time.Millisecond)
+		for {
+			<-ticker.C
+			feedUnderloaded := cpuPoolFeedUnderloaded.Get(&st.SV)
+			if feedUnderloaded {
+				cpuPool.AdjustSlotsUsingLoad(cpupool.UnderloadValue)
+			}
+		}
+	}()
+
+	goschedstats.RegisterRunnableCountCallback(func(runnable int, maxProcs int) {
+		feedUnderloaded := cpuPoolFeedUnderloaded.Get(&st.SV)
+		if feedUnderloaded {
+			return
+		}
+		cpuPool.AdjustSlotsUsingRunnable(runnable, maxProcs)
+	})
+	cpuPoolCapKVSlotsSetting.SetOnChange(&st.SV, func() {
+		cpuPool.ChangeKVCapSlots(int(cpuPoolCapKVSlotsSetting.Get(&st.SV)))
+	})
+	cpuPoolLoadHistoryLength.SetOnChange(&st.SV, func() {
+		cpuPool.SetHistoryLength(int(cpuPoolLoadHistoryLength.Get(&st.SV)))
+	})
+	registry.AddMetricStruct(cpuPool.Metrics)
+	kvWorkAdmission := cpupool.NewAdmissionQueue(
+		cpupool.AdmissionOptions{Name: "ToKV", TiedToRange: true, WorkKind: cpupool.KVWork}, cpuPool)
+	registry.AddMetricStruct(kvWorkAdmission.Metrics)
+	sqlKVResponseAdmission := cpupool.NewAdmissionQueue(
+		cpupool.AdmissionOptions{
+			Name: "KVToSQL", TiedToRange: false, WorkKind: cpupool.SQLKVResponseWork}, cpuPool)
+	registry.AddMetricStruct(sqlKVResponseAdmission.Metrics)
+	sqlSQLResponseAdmission := cpupool.NewAdmissionQueue(
+		cpupool.AdmissionOptions{
+			Name: "SQLToSQL", TiedToRange: false, WorkKind: cpupool.SQLSQLResponseWork}, cpuPool)
+	registry.AddMetricStruct(sqlSQLResponseAdmission.Metrics)
+
 	dbCtx := kv.DefaultDBContext(stopper)
 	dbCtx.NodeID = idContainer
 	dbCtx.Stopper = stopper
 	db := kv.NewDBWithContext(cfg.AmbientCtx, tcsFactory, clock, dbCtx)
+	db.SQLKVResponseAdmission = sqlKVResponseAdmission
 
 	nlActive, nlRenewal := cfg.NodeLivenessDurations()
 	if knobs := cfg.TestingKnobs.NodeLiveness; knobs != nil {
@@ -595,6 +649,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	node := NewNode(
 		storeCfg, recorder, registry, stopper,
 		txnMetrics, stores, nil /* execCfg */, &rpcContext.ClusterID)
+	node.admission = kvWorkAdmission
 	lateBoundNode = node
 	roachpb.RegisterInternalServer(grpcServer.Server, node)
 	kvserver.RegisterPerReplicaServer(grpcServer.Server, node.perReplicaServer)
@@ -674,6 +729,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 			externalStorage:        externalStorage,
 			externalStorageFromURI: externalStorageFromURI,
 			isMeta1Leaseholder:     node.stores.IsMeta1Leaseholder,
+			sqlResponseAdmission:   sqlSQLResponseAdmission,
 		},
 		SQLConfig:                &cfg.SQLConfig,
 		BaseConfig:               &cfg.BaseConfig,

@@ -844,6 +844,7 @@ func (s *vectorizedFlowCreator) setupInput(
 			inbox, err := s.remoteComponentCreator.newInbox(
 				ctx, colmem.NewAllocator(ctx, s.newStreamingMemAccount(flowCtx), factory), input.ColumnTypes, inputStream.StreamID,
 			)
+			inbox.SQLResponseAdmission = flowCtx.Cfg.SQLResponseAdmission
 
 			if err != nil {
 				return nil, nil, nil, nil, err

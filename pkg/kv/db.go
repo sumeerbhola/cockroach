@@ -14,11 +14,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/util/cpupool"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -255,6 +257,11 @@ type DB struct {
 	ctx     DBContext
 	// crs is the sender used for non-transactional requests.
 	crs CrossRangeTxnWrapperSender
+
+	// Hack. This is for use of clients of the DB, and we are placing it here
+	// just for plumbing convenience. Both reads and writes for SQL=>KV use a
+	// DB.
+	SQLKVResponseAdmission *cpupool.AdmissionQueue
 }
 
 // NonTransactionalSender returns a Sender that can be used for sending
@@ -716,6 +723,7 @@ func sendAndFill(ctx context.Context, send SenderFunc, b *Batch) error {
 	var ba roachpb.BatchRequest
 	ba.Requests = b.reqs
 	ba.Header = b.Header
+	ba.AdmissionInfo = b.RequestAdmissionInfo
 	b.response, b.pErr = send(ctx, ba)
 	b.fillResults(ctx)
 	if b.pErr == nil {
@@ -736,6 +744,19 @@ func sendAndFill(ctx context.Context, send SenderFunc, b *Batch) error {
 // operation. The order of the results matches the order the operations were
 // added to the batch.
 func (db *DB) Run(ctx context.Context, b *Batch) error {
+	if b.RequestAdmissionInfo.OriginalIssueWallTime == 0 && !b.RequestAdmissionInfo.Internal {
+		// Not initialized. This is hacky and for the case where the Batch was not created using
+		// Txn.NewBatch.
+		b.RequestAdmissionInfo = roachpb.RequestAdmissionInfo{
+			Internal:              false,
+			Priority:              roachpb.RequestAdmissionInfo_NORMAL,
+			OriginalIssueWallTime: time.Now().UnixNano(),
+			// Arbitrarily setting the following to true, since my understanding is
+			// that this path is only used for writes. Reads, which could use a
+			// follower, are using Txn.Send called by txnKVFetcher.
+			RequiresLeaseholder: true,
+		}
+	}
 	if err := b.prepare(); err != nil {
 		return err
 	}

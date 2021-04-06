@@ -139,6 +139,10 @@ func (tb *tableWriterBase) flushAndStartNewBatch(ctx context.Context) error {
 	if err := tb.txn.Run(ctx, tb.b); err != nil {
 		return row.ConvertBatchError(ctx, tb.desc, tb.b)
 	}
+	// For reads we are doing admission for SQLKVResponseWork in
+	// kv_batch_fetcher.go. We could consider doing the same for writes here. Or
+	// perhaps we don't need it since most writes are preceded by reads. Similar
+	// discussion applies to finalize below.
 	tb.b = tb.txn.NewBatch()
 	tb.lastBatchSize = tb.currentBatchSize
 	tb.currentBatchSize = 0
