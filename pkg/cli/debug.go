@@ -61,6 +61,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/tool"
+	"github.com/cockroachdb/pebble/vfs"
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/kr/pretty"
 	"github.com/spf13/cobra"
@@ -689,7 +690,7 @@ func runDebugGCCmd(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-var debugPebbleCmd = &cobra.Command{
+var DebugPebbleCmd = &cobra.Command{
 	Use:   "pebble [command]",
 	Short: "run a Pebble introspection tool command",
 	Long: `
@@ -1225,6 +1226,8 @@ func runDebugMergeLogs(cmd *cobra.Command, args []string) error {
 // DebugCmdsForRocksDB lists debug commands that access rocksdb through the engine
 // and need encryption flags (injected by CCL code).
 // Note: do NOT include commands that just call rocksdb code without setting up an engine.
+// Does not include DebugPebbleCmd which is the root of the commands in the
+// pebble tool.
 var DebugCmdsForRocksDB = []*cobra.Command{
 	debugCheckStoreCmd,
 	debugCompactCmd,
@@ -1291,6 +1294,54 @@ func (m lockValueFormatter) Format(f fmt.State, c rune) {
 	fmt.Fprint(f, kvserver.SprintIntent(m.value))
 }
 
+// swappableFS is a vfs.FS that can be swapped out at a future time.
+type swappableFS struct {
+	vfs.FS
+}
+
+// set replaces the FS in a swappableFS.
+func (s swappableFS) set(fs vfs.FS) {
+	s.FS = fs
+}
+
+// pebbleToolFS is the vfs.FS that the pebble tool should use. It is necessary
+// because an FS must be passed to tool.New before the command line flags are
+// parsed (i.e. before we can determine if we have an encrypted FS). Also,
+// unlike the commands implemented in this file, that explicitly use
+// OpenEngine, we do not have the ability to intercept when Pebble is opened
+// by the pebble tool commands.
+var pebbleToolFS = &swappableFS{vfs.Default}
+
+func setupPebbleToolFS(cmd *cobra.Command, args []string) error {
+	storageConfig := base.StorageConfig{
+		Settings: serverCfg.Settings,
+		Dir:      serverCfg.Stores.Specs[0].Path,
+	}
+
+	if PopulateRocksDBConfigHook != nil {
+		if err := PopulateRocksDBConfigHook(&storageConfig); err != nil {
+			return err
+		}
+		if storageConfig.EncryptionOptions == nil {
+			pebbleToolFS.set(vfs.Default)
+			return nil
+		}
+	}
+
+	cfg := storage.PebbleConfig{
+		StorageConfig: storageConfig,
+		Opts:          storage.DefaultPebbleOptions(),
+	}
+
+	_, _, err := storage.ResolveEncryptedEnvOptions(&cfg)
+	if err != nil {
+		return err
+	}
+
+	pebbleToolFS.set(cfg.Opts.FS)
+	return nil
+}
+
 func init() {
 	DebugCmd.AddCommand(debugCmds...)
 
@@ -1315,9 +1366,9 @@ func init() {
 	// and merger functions must be specified to pebble that match the ones used
 	// to write those files.
 	pebbleTool := tool.New(tool.Mergers(storage.MVCCMerger),
-		tool.DefaultComparer(storage.EngineComparer))
-	debugPebbleCmd.AddCommand(pebbleTool.Commands...)
-	DebugCmd.AddCommand(debugPebbleCmd)
+		tool.DefaultComparer(storage.EngineComparer), tool.FS(pebbleToolFS))
+	DebugPebbleCmd.AddCommand(pebbleTool.Commands...)
+	DebugCmd.AddCommand(DebugPebbleCmd)
 
 	doctorExamineCmd.AddCommand(doctorExamineClusterCmd, doctorExamineZipDirCmd)
 	doctorRecreateCmd.AddCommand(doctorRecreateClusterCmd, doctorRecreateZipDirCmd)

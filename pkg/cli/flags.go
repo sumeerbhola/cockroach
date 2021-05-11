@@ -858,6 +858,10 @@ func init() {
 		varFlag(f, &debugCtx.ballastSize, cliflags.Size)
 	}
 	{
+		f := DebugPebbleCmd.PersistentFlags()
+		varFlag(f, &serverCfg.Stores, cliflags.Store)
+	}
+	{
 		for _, c := range []*cobra.Command{
 			doctorExamineClusterCmd,
 			doctorExamineZipDirCmd,

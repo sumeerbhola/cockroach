@@ -109,6 +109,19 @@ func doMain(cmd *cobra.Command, cmdName string) error {
 					false /* isServerCmd */, true /* applyConfig */)
 			}
 		}
+		if cmdIsFromPebbleTool(cmd) {
+			wrapped := cmd.PreRunE
+			cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+				if wrapped != nil {
+					// This will setup logging, which is needed before encryption code
+					// is run.
+					if err := wrapped(cmd, args); err != nil {
+						return err
+					}
+				}
+				return setupPebbleToolFS(cmd, args)
+			}
+		}
 	}
 
 	logcrash.SetupCrashReporter(
@@ -139,6 +152,22 @@ func cmdHasCustomLoggingSetup(thisCmd *cobra.Command) bool {
 		}
 	})
 	return hasCustomLogging
+}
+
+func cmdIsFromPebbleTool(thisCmd *cobra.Command) bool {
+	if thisCmd == nil {
+		return false
+	}
+	if thisCmd == DebugPebbleCmd {
+		return true
+	}
+	isFromPebbleTool := false
+	thisCmd.VisitParents(func(parent *cobra.Command) {
+		if parent == DebugPebbleCmd {
+			isFromPebbleTool = true
+		}
+	})
+	return isFromPebbleTool
 }
 
 // commandName computes the name of the command that args would invoke. For
