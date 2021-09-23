@@ -171,7 +171,7 @@ func registerKV(r registry.Registry) {
 		{nodes: 3, cpus: 32, readPercent: 0, blockSize: 1 << 16, /* 64 KB */
 			admissionControlEnabled: true},
 		{nodes: 3, cpus: 32, readPercent: 95, blockSize: 1 << 16, /* 64 KB */
-			admissionControlEnabled: true},
+			admissionControlEnabled: true, duration: 420 * time.Minute},
 
 		// Configs with large batch sizes.
 		{nodes: 3, cpus: 8, readPercent: 0, batchSize: 16},

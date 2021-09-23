@@ -114,7 +114,9 @@ func setupTPCC(
 	ctx context.Context, t test.Test, c cluster.Cluster, opts tpccOptions,
 ) (crdbNodes, workloadNode option.NodeListOption) {
 	// Randomize starting with encryption-at-rest enabled.
-	c.EncryptAtRandom(true)
+	// c.EncryptAtRandom(true)
+	c.EncryptDefault(false)
+	c.EncryptAtRandom(false)
 	crdbNodes = c.Range(1, c.Spec().NodeCount-1)
 	workloadNode = c.Node(c.Spec().NodeCount)
 	if c.IsLocal() {
@@ -130,6 +132,7 @@ func setupTPCC(
 			// those with ./cockroach workload as well.
 			c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
 			c.Start(ctx, crdbNodes)
+			EnableAdmissionControl(ctx, t, c)
 		}
 	}
 
@@ -222,7 +225,7 @@ func runTPCC(ctx context.Context, t test.Test, c cluster.Cluster, opts tpccOptio
 			t.WorkerStatus(fmt.Sprintf("running tpcc idx %d on %s", i, pgURLs[i]))
 			cmd := fmt.Sprintf(
 				"./cockroach workload run tpcc --warehouses=%d --histograms="+t.PerfArtifactsDir()+"/%sstats.json "+
-					opts.ExtraRunArgs+" --ramp=%s --duration=%s --prometheus-port=%d --pprofport=%d %s %s",
+					opts.ExtraRunArgs+" --tolerate-errors --ramp=%s --duration=%s --prometheus-port=%d --pprofport=%d %s %s",
 				opts.Warehouses,
 				statsPrefix,
 				rampDuration,
@@ -436,6 +439,19 @@ func registerTPCC(r registry.Registry) {
 			runTPCC(ctx, t, c, tpccOptions{
 				Warehouses: warehouses,
 				Duration:   4 * 24 * time.Hour,
+				SetupType:  usingImport,
+			})
+		},
+	})
+
+	r.Add(registry.TestSpec{
+		Name:    "tpcc/warehouse=3300",
+		Owner:   registry.OwnerKV,
+		Cluster: r.MakeClusterSpec(4, spec.CPU(16)),
+		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			runTPCC(ctx, t, c, tpccOptions{
+				Warehouses: 3300,
+				Duration:   420 * time.Minute,
 				SetupType:  usingImport,
 			})
 		},
