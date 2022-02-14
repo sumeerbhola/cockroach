@@ -124,7 +124,8 @@ func setupTPCC(
 	ctx context.Context, t test.Test, c cluster.Cluster, opts tpccOptions,
 ) (crdbNodes, workloadNode option.NodeListOption) {
 	// Randomize starting with encryption-at-rest enabled.
-	c.EncryptAtRandom(true)
+	c.EncryptAtRandom(false)
+	c.EncryptDefault(false)
 	crdbNodes = c.Range(1, c.Spec().NodeCount-1)
 	workloadNode = c.Node(c.Spec().NodeCount)
 	if c.IsLocal() {
@@ -685,6 +686,20 @@ func registerTPCC(r registry.Registry) {
 				Duration:       time.Minute * 15,
 				ExtraSetupArgs: "--interleaved=true",
 				SetupType:      usingInit,
+			})
+		},
+	})
+
+	r.Add(registry.TestSpec{
+		Name:    "tpcc-overload/nodes=3/cpu=16/w=3800",
+		Owner:   registry.OwnerSQLQueries,
+		Cluster: r.MakeClusterSpec(4, spec.CPU(16)),
+		Timeout: 6 * time.Hour,
+		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			runTPCC(ctx, t, c, tpccOptions{
+				Warehouses: 3800,
+				Duration:   time.Minute * 75,
+				SetupType:  usingImport,
 			})
 		},
 	})

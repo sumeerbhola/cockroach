@@ -108,7 +108,7 @@ func registerKV(r registry.Registry) {
 
 			splits := " --splits=" + strconv.Itoa(computeNumSplits(opts))
 			if opts.duration == 0 {
-				opts.duration = 30 * time.Minute
+				opts.duration = 50 * time.Minute
 			}
 			duration := " --duration=" + ifLocal(c, "10s", opts.duration.String())
 			var readPercent string
@@ -159,6 +159,8 @@ func registerKV(r registry.Registry) {
 		{nodes: 1, cpus: 8, readPercent: 0},
 		// CPU overload test, to stress admission control.
 		{nodes: 1, cpus: 8, readPercent: 50, concMultiplier: 8192},
+		{nodes: 3, cpus: 8, readPercent: 50, concMultiplier: 4096},
+
 		// IO write overload test, to stress admission control.
 		{nodes: 1, cpus: 8, readPercent: 0, concMultiplier: 4096, blockSize: 1 << 16 /* 64 KB */},
 		{nodes: 1, cpus: 8, readPercent: 95},

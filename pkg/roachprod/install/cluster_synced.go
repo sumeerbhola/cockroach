@@ -1491,6 +1491,7 @@ func (c *SyncedCluster) Logs(
 		}
 		rsyncArgs = append(rsyncArgs, remote, local)
 		cmd := exec.CommandContext(ctx, "rsync", rsyncArgs...)
+		fmt.Printf("HA rsync %s\n", strings.Join(rsyncArgs, " "))
 		var stderrBuf bytes.Buffer
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = &stderrBuf

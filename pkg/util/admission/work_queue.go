@@ -76,6 +76,11 @@ var EpochLIFOEnabled = settings.RegisterBoolSetting(
 	"when true, epoch-LIFO behavior is enabled when there is significant delay in admission",
 	false).WithPublic()
 
+var epochLIFOPinnedPriority = settings.RegisterIntSetting(
+	settings.TenantWritable,
+	"admission.epoch_lifo.pinned_priority",
+	"hacky setting for testing", 128).WithPublic()
+
 // WorkPriority represents the priority of work. In an WorkQueue, it is only
 // used for ordering within a tenant. High priority work can starve lower
 // priority work.
@@ -280,13 +285,13 @@ func makeWorkQueue(
 					closedEpoch, closingErrorNanos := q.tryCloseEpoch()
 					if closedEpoch {
 						// TODO: remove
-						log.Infof(context.Background(), "epoch-closer: closed epoch")
+						log.Infof(context.Background(), "epoch-closer(%s): closed epoch", string(workKindString(workKind)))
 						if currentTickerDur == tickerDurShort {
 							if closingErrorNanos < acceptableErrorNanos {
 								// Switch to long duration ticking.
 								currentTickerDur = time.Duration(epochLengthNanos)
 								// TODO: remove
-								log.Infof(context.Background(), "epoch-closer: switched to long ticks")
+								log.Infof(context.Background(), "epoch-closer(%s): switched to long ticks", string(workKindString(workKind)))
 								ticker.Reset(currentTickerDur)
 							}
 							// Else continue ticking at 1ms.
@@ -295,7 +300,7 @@ func makeWorkQueue(
 							// high. Switch to 1ms ticks.
 							currentTickerDur = tickerDurShort
 							// TODO: remove
-							log.Infof(context.Background(), "epoch-closer: switched to short ticks")
+							log.Infof(context.Background(), "epoch-closer(%s): switched to short ticks", string(workKindString(workKind)))
 							ticker.Reset(currentTickerDur)
 						}
 					}
@@ -341,6 +346,11 @@ func (q *WorkQueue) tryCloseEpoch() (closedEpoch bool, closingErrorNanos int64) 
 			tenant.priorityStates.getFIFOPriorityThresholdAndReset(tenant.fifoPriorityThreshold)
 		if !epochLIFOEnabled {
 			tenant.fifoPriorityThreshold = int(LowPri)
+		} else {
+			pinnedPriority := int(epochLIFOPinnedPriority.Get(&q.settings.SV))
+			if pinnedPriority > tenant.fifoPriorityThreshold {
+				tenant.fifoPriorityThreshold = pinnedPriority
+			}
 		}
 		if tenant.fifoPriorityThreshold != prevThreshold || doLog {
 			logVerb := "is"
@@ -394,7 +404,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 	q.mu.Lock()
 	tenant, ok := q.mu.tenants[tenantID]
 	if !ok {
-		tenant = newTenantInfo(tenantID)
+		tenant = newTenantInfo(tenantID, string(workKindString(q.workKind)))
 		q.mu.tenants[tenantID] = tenant
 	}
 	if info.BypassAdmission && roachpb.IsSystemTenantID(tenantID) && q.workKind == KVWork {
@@ -458,7 +468,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 			tenant.used--
 		} else {
 			if !ok {
-				tenant = newTenantInfo(tenantID)
+				tenant = newTenantInfo(tenantID, string(workKindString(q.workKind)))
 				q.mu.tenants[tenantID] = tenant
 			}
 			// Don't want to overflow tenant.used if it is already 0 because of
@@ -750,12 +760,13 @@ type priorityStates struct {
 	// epoch is closed.
 	ps                         []priorityState
 	lowestPriorityWithRequests int
+	logStr                     string
 }
 
 // makePriorityStates returns an empty priorityStates, that reuses the
 // ps slice.
-func makePriorityStates(ps []priorityState) priorityStates {
-	return priorityStates{ps: ps[:0], lowestPriorityWithRequests: oneAboveHighPri}
+func makePriorityStates(ps []priorityState, logStr string) priorityStates {
+	return priorityStates{ps: ps[:0], lowestPriorityWithRequests: oneAboveHighPri, logStr: logStr}
 }
 
 // requestAtPriority is called when a request is received at the given
@@ -828,7 +839,7 @@ func (ps *priorityStates) getFIFOPriorityThresholdAndReset(curPriorityThreshold 
 			// lucky in getting them admitted.
 		}
 		// TODO: remove
-		log.Infof(context.Background(), "pri: %d, count: %d, delay: %s, lpwr: %d", p.priority,
+		log.Infof(context.Background(), "%s: pri: %d, count: %d, delay: %s, lpwr: %d", ps.logStr, p.priority,
 			p.admittedCount, p.maxQueueDelay.String(), ps.lowestPriorityWithRequests)
 	}
 	for i := range ps.ps {
@@ -909,13 +920,13 @@ var tenantInfoPool = sync.Pool{
 	},
 }
 
-func newTenantInfo(id uint64) *tenantInfo {
+func newTenantInfo(id uint64, logStr string) *tenantInfo {
 	ti := tenantInfoPool.Get().(*tenantInfo)
 	*ti = tenantInfo{
 		id:                    id,
 		waitingWorkHeap:       ti.waitingWorkHeap,
 		openEpochsHeap:        ti.openEpochsHeap,
-		priorityStates:        makePriorityStates(ti.priorityStates.ps),
+		priorityStates:        makePriorityStates(ti.priorityStates.ps, logStr),
 		fifoPriorityThreshold: int(LowPri),
 		heapIndex:             -1,
 	}
@@ -938,7 +949,7 @@ func releaseTenantInfo(ti *tenantInfo) {
 	*ti = tenantInfo{
 		waitingWorkHeap: ti.waitingWorkHeap,
 		openEpochsHeap:  ti.openEpochsHeap,
-		priorityStates:  makePriorityStates(ti.priorityStates.ps),
+		priorityStates:  makePriorityStates(ti.priorityStates.ps, ""),
 	}
 	tenantInfoPool.Put(ti)
 }
