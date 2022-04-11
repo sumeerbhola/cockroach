@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/redact"
+	"github.com/dustin/go-humanize"
 )
 
 // KVSlotAdjusterOverloadThreshold sets a goroutine runnable threshold at
@@ -1626,12 +1627,43 @@ func (io *ioLoadListener) allocateTokensTick() {
 	io.mu.kvGranter.setAvailableIOTokensLocked(toAllocate)
 }
 
+func computeByteTokensAndUtilization(m pebble.ThroughputMetric) (tokens int64, util float64) {
+	// TODO: should measure and use actual time interval.
+	tokens = m.Rate() * adjustmentInterval
+	totalTime := m.WorkTime + m.IdleTime
+	if totalTime != 0 {
+		util = float64(m.WorkTime) / float64(totalTime)
+	}
+	return tokens, util
+}
+
 // adjustTokens computes a new value of totalTokens (and resets
 // tokensAllocated). The new value, when overloaded, is based on comparing how
 // many bytes are being moved out of L0 via compactions with the average
 // number of bytes being added to L0 per KV work. We want the former to be
 // (significantly) larger so that L0 returns to a healthy state.
 func (io *ioLoadListener) adjustTokens(ctx context.Context, m *pebble.Metrics) {
+	{
+		tokens, util := computeByteTokensAndUtilization(m.ExpLogWriter.WriteThroughput)
+		// TODO: Also scaling by utilization means that if compaction is the
+		// bottleneck these will become unbottlenecked and we will have higher tokens here.
+		// How should we deal with this being the bottleneck?
+		// Utilization is fluctuating: just compute the usual tokens and smooth it.
+		// What about utilization when considering optional activities. Take max over 2min
+		// and mean. Max is over 75% and mean is > 50%?
+
+		log.Infof(ctx, "logWriter: tokens: %s, util: %.2f, pendingUtil: %.2f, syncUtil: %.2f",
+			humanize.IBytes(uint64(tokens)), util, m.ExpLogWriter.PendingBufferUtilization,
+			m.ExpLogWriter.SyncQueueUtilization)
+		slm := m.ExpLogWriter.SyncLatencyMicros
+		if slm != nil {
+			log.Infof(ctx, "logWriter: sync: mean: %.2f, p50,p90,p99: %d,%d,%d",
+				slm.Mean(), slm.ValueAtQuantile(50), slm.ValueAtQuantile(90),
+				slm.ValueAtQuantile(99))
+		}
+		tokens, util = computeByteTokensAndUtilization(m.ExpFlush.WriteThroughput)
+		log.Infof(ctx, "flush: tokens: %s, util: %.2f", humanize.IBytes(uint64(tokens)), util)
+	}
 	io.tokensAllocated = 0
 	// Grab the cumulative stats.
 	admittedCount := io.kvRequester.getAdmittedCount()
@@ -1723,9 +1755,11 @@ func (io *ioLoadListener) adjustTokens(ctx context.Context, m *pebble.Metrics) {
 		}
 		if doLog {
 			log.Infof(ctx,
-				"IO overload on store %d (files %d, sub-levels %d): admitted: %d, added: %d, "+
+				"IO overload on store %d (files %d, sub-levels %d): byte-tokens: %s, admitted: %d, added: %d, "+
 					"removed (%d, %d), admit: (%f, %d)",
-				io.storeID, m.Levels[0].NumFiles, m.Levels[0].Sublevels, admitted, bytesAdded,
+				io.storeID, m.Levels[0].NumFiles, m.Levels[0].Sublevels,
+				humanize.IBytes(uint64(io.smoothedNumAdmit*smoothedBytesAddedPerWork)),
+				admitted, bytesAdded,
 				bytesRemoved, io.smoothedBytesRemoved, numAdmit, io.totalTokens)
 		}
 	} else {

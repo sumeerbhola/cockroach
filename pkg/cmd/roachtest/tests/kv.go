@@ -162,6 +162,7 @@ func registerKV(r registry.Registry) {
 		{nodes: 1, cpus: 8, readPercent: 50, concMultiplier: 8192},
 		// IO write overload test, to stress admission control.
 		{nodes: 1, cpus: 8, readPercent: 0, concMultiplier: 4096, blockSize: 1 << 16 /* 64 KB */},
+		{nodes: 1, cpus: 32, readPercent: 0, concMultiplier: 1024, blockSize: 1 << 16 /* 64 KB */},
 		{nodes: 1, cpus: 8, readPercent: 95},
 		{nodes: 1, cpus: 32, readPercent: 0},
 		{nodes: 1, cpus: 32, readPercent: 95},

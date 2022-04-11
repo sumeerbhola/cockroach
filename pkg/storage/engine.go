@@ -685,6 +685,7 @@ type Engine interface {
 	Flush() error
 	// GetMetrics retrieves metrics from the engine.
 	GetMetrics() Metrics
+	GetMetricsExperimental() Metrics
 	// GetEncryptionRegistries returns the file and key registries when encryption is enabled
 	// on the store.
 	GetEncryptionRegistries() (*EncryptionRegistries, error)

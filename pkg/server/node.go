@@ -771,7 +771,7 @@ func (n *Node) computePeriodicMetrics(ctx context.Context, tick int) error {
 func (n *Node) GetPebbleMetrics() []admission.StoreMetrics {
 	var metrics []admission.StoreMetrics
 	_ = n.stores.VisitStores(func(store *kvserver.Store) error {
-		m := store.Engine().GetMetrics()
+		m := store.Engine().GetMetricsExperimental()
 		metrics = append(
 			metrics, admission.StoreMetrics{StoreID: int32(store.StoreID()), Metrics: m.Metrics})
 		return nil

@@ -1433,6 +1433,16 @@ func (p *Pebble) GetMetrics() Metrics {
 	}
 }
 
+func (p *Pebble) GetMetricsExperimental() Metrics {
+	m := p.db.ExperimentalMetricsWithReset()
+	return Metrics{
+		Metrics:         m,
+		WriteStallCount: atomic.LoadInt64(&p.writeStallCount),
+		DiskSlowCount:   atomic.LoadInt64(&p.diskSlowCount),
+		DiskStallCount:  atomic.LoadInt64(&p.diskStallCount),
+	}
+}
+
 // GetEncryptionRegistries implements the Engine interface.
 func (p *Pebble) GetEncryptionRegistries() (*EncryptionRegistries, error) {
 	rv := &EncryptionRegistries{}
