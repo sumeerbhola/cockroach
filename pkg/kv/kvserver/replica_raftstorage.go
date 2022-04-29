@@ -12,7 +12,10 @@ package kvserver
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -942,9 +945,26 @@ func (r *Replica) applySnapshot(
 			return err
 		}
 	}
-	if err := r.store.engine.IngestExternalFiles(ctx, inSnap.SSTStorageScratch.SSTs()); err != nil {
+	eng := r.store.engine.(*storage.Pebble)
+	ingestStats, err := eng.IngestExternalFilesWithStats(ctx, inSnap.SSTStorageScratch.SSTs())
+	if err != nil {
 		return errors.Wrapf(err, "while ingesting %s", inSnap.SSTStorageScratch.SSTs())
 	}
+	if ingestStats.Bytes > 200*1024 {
+		var buf strings.Builder
+		sort.Slice(ingestStats.IngestDetails, func(i, j int) bool {
+			return ingestStats.IngestDetails[i].Bytes > ingestStats.IngestDetails[j].Bytes
+		})
+		for _, d := range ingestStats.IngestDetails {
+			fmt.Fprintf(&buf, "(b:%s il:%d dol:%d bl:%d) ", humanizeutil.IBytes(int64(d.Bytes)),
+				d.IngestedLevel, d.HighestLevelWithDataOverlap, d.BaseLevel)
+		}
+		log.Infof(ctx, "Ingest: bytes:%s, l0:%s, details: %s",
+			humanizeutil.IBytes(int64(ingestStats.Bytes)),
+			humanizeutil.IBytes(int64(ingestStats.ApproxIngestedIntoL0Bytes)),
+			redact.SafeString(buf.String()))
+	}
+
 	stats.ingestion = timeutil.Now()
 
 	state, err := stateloader.Make(desc.RangeID).Load(ctx, r.store.engine, desc)
