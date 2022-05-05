@@ -489,12 +489,14 @@ func addSSTablePreApply(
 		// copy of it.  We cannot pass it the path in the sideload store as
 		// the engine deletes the passed path on success.
 		if linkErr := eng.Link(path, ingestPath); linkErr == nil {
-			ingestErr := eng.IngestExternalFiles(ctx, []string{ingestPath})
+			ingestStats, ingestErr := eng.(*storage.Pebble).IngestExternalFilesWithStats(
+				ctx, []string{ingestPath})
 			if ingestErr != nil {
 				log.Fatalf(ctx, "while ingesting %s: %v", ingestPath, ingestErr)
 			}
 			// Adding without modification succeeded, no copy necessary.
 			log.Eventf(ctx, "ingested SSTable at index %d, term %d: %s", index, term, ingestPath)
+			logIngestStats(ctx, "apply", ingestStats)
 			return false
 		}
 
@@ -523,10 +525,12 @@ func addSSTablePreApply(
 		copied = true
 	}
 
-	if err := eng.IngestExternalFiles(ctx, []string{path}); err != nil {
+	ingestStats, err := eng.(*storage.Pebble).IngestExternalFilesWithStats(ctx, []string{path})
+	if err != nil {
 		log.Fatalf(ctx, "while ingesting %s: %+v", path, err)
 	}
 	log.Eventf(ctx, "ingested SSTable at index %d, term %d: %s", index, term, path)
+	logIngestStats(ctx, "apply", ingestStats)
 	return copied
 }
 

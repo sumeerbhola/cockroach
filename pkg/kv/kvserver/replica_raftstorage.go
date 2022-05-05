@@ -35,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/redact"
 	"go.etcd.io/etcd/raft/v3"
 	"go.etcd.io/etcd/raft/v3/raftpb"
@@ -950,20 +951,7 @@ func (r *Replica) applySnapshot(
 	if err != nil {
 		return errors.Wrapf(err, "while ingesting %s", inSnap.SSTStorageScratch.SSTs())
 	}
-	if ingestStats.Bytes > 200*1024 {
-		var buf strings.Builder
-		sort.Slice(ingestStats.IngestDetails, func(i, j int) bool {
-			return ingestStats.IngestDetails[i].Bytes > ingestStats.IngestDetails[j].Bytes
-		})
-		for _, d := range ingestStats.IngestDetails {
-			fmt.Fprintf(&buf, "(b:%s il:%d dol:%d bl:%d) ", humanizeutil.IBytes(int64(d.Bytes)),
-				d.IngestedLevel, d.HighestLevelWithDataOverlap, d.BaseLevel)
-		}
-		log.Infof(ctx, "Ingest: bytes:%s, l0:%s, details: %s",
-			humanizeutil.IBytes(int64(ingestStats.Bytes)),
-			humanizeutil.IBytes(int64(ingestStats.ApproxIngestedIntoL0Bytes)),
-			redact.SafeString(buf.String()))
-	}
+	logIngestStats(ctx, "snap", ingestStats)
 
 	stats.ingestion = timeutil.Now()
 
@@ -1099,6 +1087,24 @@ func (r *Replica) applySnapshot(
 	}
 
 	return nil
+}
+
+func logIngestStats(ctx context.Context, kind string, ingestStats pebble.IngestOperationStats) {
+	if ingestStats.Bytes > 200*1024 {
+		var buf strings.Builder
+		sort.Slice(ingestStats.IngestDetails, func(i, j int) bool {
+			return ingestStats.IngestDetails[i].Bytes > ingestStats.IngestDetails[j].Bytes
+		})
+		for _, d := range ingestStats.IngestDetails {
+			fmt.Fprintf(&buf, "(b:%s il:%d dol:%d bl:%d) ", humanizeutil.IBytes(int64(d.Bytes)),
+				d.IngestedLevel, d.HighestLevelWithDataOverlap, d.BaseLevel)
+		}
+		log.Infof(ctx, "Ingest (%s): bytes:%s, l0:%s, details: %s",
+			kind,
+			humanizeutil.IBytes(int64(ingestStats.Bytes)),
+			humanizeutil.IBytes(int64(ingestStats.ApproxIngestedIntoL0Bytes)),
+			redact.SafeString(buf.String()))
+	}
 }
 
 // clearSubsumedReplicaDiskData clears the on disk data of the subsumed
