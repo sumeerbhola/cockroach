@@ -646,7 +646,7 @@ func DefaultPebbleOptions() *pebble.Options {
 	}
 	// Instantiate a file system with disk health checking enabled. This FS wraps
 	// vfs.Default, and can be wrapped for encryption-at-rest.
-	opts.FS = vfs.WithDiskHealthChecks(vfs.Default, diskHealthCheckInterval,
+	opts.FS, _ = vfs.WithDiskHealthChecks(vfs.Default, diskHealthCheckInterval,
 		func(name string, duration time.Duration) {
 			opts.EventListener.DiskSlow(pebble.DiskSlowInfo{
 				Path:     name,

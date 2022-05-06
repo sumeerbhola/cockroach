@@ -24,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
+	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -116,7 +117,8 @@ type replicaStateMachine struct {
 	// ephemeralBatch is returned from NewBatch(true /* ephemeral */).
 	ephemeralBatch ephemeralReplicaAppBatch
 	// stats are updated during command application and reset by moveStats.
-	stats applyCommittedEntriesStats
+	stats                   applyCommittedEntriesStats
+	offsetOfLastBatchCommit uint64
 }
 
 // getStateMachine returns the Replica's apply.StateMachine. The Replica's
@@ -377,6 +379,7 @@ func checkForcedErr(
 
 // NewBatch implements the apply.StateMachine interface.
 func (sm *replicaStateMachine) NewBatch(ephemeral bool) apply.Batch {
+	sm.offsetOfLastBatchCommit = 0
 	r := sm.r
 	if ephemeral {
 		mb := &sm.ephemeralBatch
@@ -936,9 +939,11 @@ func (b *replicaAppBatch) ApplyToStateMachine(ctx context.Context) error {
 	// before ensuring that the replica's data has been synchronously removed.
 	// See handleChangeReplicasResult().
 	sync := b.changeRemovesReplica
-	if err := b.batch.Commit(sync); err != nil {
+	offsetBytes, err := b.batch.CommitWithOffset(sync)
+	if err != nil {
 		return wrapWithNonDeterministicFailure(err, "unable to commit Raft entry batch")
 	}
+	b.sm.offsetOfLastBatchCommit = offsetBytes
 	b.batch.Close()
 	b.batch = nil
 
@@ -1284,6 +1289,9 @@ func (sm *replicaStateMachine) handleNonTrivialReplicatedEvalResult(
 				isRaftLogTruncationDeltaTrusted = false
 			}
 			rResult.RaftLogDelta += raftLogDelta
+			log.Infof(ctx, "replica-truncation(%d): delta: %s, commit-offset: %s", sm.r.RangeID,
+				humanizeutil.IBytes(rResult.RaftLogDelta),
+				humanizeutil.IBytes(int64(sm.offsetOfLastBatchCommit)))
 			rResult.State.TruncatedState = nil
 			rResult.RaftExpectedFirstIndex = 0
 		}

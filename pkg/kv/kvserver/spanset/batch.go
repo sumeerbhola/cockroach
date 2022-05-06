@@ -701,6 +701,10 @@ func (s spanSetBatch) Commit(sync bool) error {
 	return s.b.Commit(sync)
 }
 
+func (s spanSetBatch) CommitWithOffset(sync bool) (uint64, error) {
+	return s.b.CommitWithOffset(sync)
+}
+
 func (s spanSetBatch) Empty() bool {
 	return s.b.Empty()
 }

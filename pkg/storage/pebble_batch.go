@@ -503,6 +503,21 @@ func (p *pebbleBatch) Commit(sync bool) error {
 	return err
 }
 
+func (p *pebbleBatch) CommitWithOffset(sync bool) (uint64, error) {
+	opts := pebble.NoSync
+	if sync {
+		opts = pebble.Sync
+	}
+	if p.batch == nil {
+		panic("called with nil batch")
+	}
+	offset, err := p.batch.CommitWithBytes(opts)
+	if err != nil {
+		panic(err)
+	}
+	return offset, err
+}
+
 // Empty implements the Batch interface.
 func (p *pebbleBatch) Empty() bool {
 	return p.batch.Count() == 0

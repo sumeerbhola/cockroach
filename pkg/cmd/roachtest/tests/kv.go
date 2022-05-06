@@ -101,7 +101,7 @@ func registerKV(r registry.Registry) {
 		t.Status("running workload")
 		m := c.NewMonitor(ctx, c.Range(1, nodes))
 		m.Go(func(ctx context.Context) error {
-			concurrencyMultiplier := 64
+			concurrencyMultiplier := 128
 			if opts.concMultiplier != 0 {
 				concurrencyMultiplier = opts.concMultiplier
 			}
