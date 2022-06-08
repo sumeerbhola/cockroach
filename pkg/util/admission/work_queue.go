@@ -481,9 +481,16 @@ func (q *WorkQueue) tryCloseEpoch(timeNow time.Time) {
 // admission control is enabled. AdmittedWorkDone must be called iff
 // enabled=true && err!=nil, and the WorkKind for this queue uses slots.
 func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err error) {
+	enabled, _, err = q.admitWithBypassInfo(ctx, info)
+	return enabled, err
+}
+
+func (q *WorkQueue) admitWithBypassInfo(
+	ctx context.Context, info WorkInfo,
+) (enabled bool, bypassed bool, err error) {
 	enabledSetting := admissionControlEnabledSettings[q.workKind]
 	if enabledSetting != nil && !enabledSetting.Get(&q.settings.SV) {
-		return false, nil
+		return false, false, nil
 	}
 	if info.requestedCount == 0 {
 		// Callers from outside the admission package don't set requestedCount --
@@ -516,7 +523,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		q.admitMu.Unlock()
 		q.granter.tookWithoutPermission(info.requestedCount)
 		q.metrics.Admitted.Inc(1)
-		return true, nil
+		return true, true, nil
 	}
 	// Work is subject to admission control.
 
@@ -533,7 +540,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		if q.granter.tryGet(info.requestedCount) {
 			q.admitMu.Unlock()
 			q.metrics.Admitted.Inc(1)
-			return true, nil
+			return true, false, nil
 		}
 		// Did not get token/slot.
 		//
@@ -586,7 +593,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		q.admitMu.Unlock()
 		q.metrics.Errored.Inc(1)
 		deadline, _ := ctx.Deadline()
-		return true,
+		return true, false,
 			errors.Newf("work %s deadline already expired: deadline: %v, now: %v",
 				workKindString(q.workKind), deadline, startTime)
 	}
@@ -661,7 +668,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		deadline, _ := ctx.Deadline()
 		log.Eventf(ctx, "deadline expired, waited in %s queue for %v",
 			workKindString(q.workKind), waitDur)
-		return true,
+		return true, false,
 			errors.Newf("work %s deadline expired while waiting: deadline: %v, start: %v, dur: %v",
 				workKindString(q.workKind), deadline, startTime, waitDur)
 	case chainID, ok := <-work.ch:
@@ -678,7 +685,7 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		}
 		log.Eventf(ctx, "admitted, waited in %s queue for %v", workKindString(q.workKind), waitDur)
 		q.granter.continueGrantChain(chainID)
-		return true, nil
+		return true, false, nil
 	}
 }
 
@@ -1587,6 +1594,7 @@ type StoreWorkHandle struct {
 	// Equal to StoreWriteWorkInfo.IngestRequest.
 	ingestRequest    bool
 	admissionEnabled bool
+	bypassed         bool
 }
 
 // AdmissionEnabled indicates whether admission control is enabled. If it
@@ -1621,11 +1629,12 @@ func (q *StoreWorkQueue) Admit(
 	h.writeTokens += estimates.workByteAddition
 	h.workByteAdditionTokens = estimates.workByteAddition
 	info.WorkInfo.requestedCount = h.writeTokens
-	enabled, err := q.q.Admit(ctx, info.WorkInfo)
+	enabled, bypassed, err := q.q.admitWithBypassInfo(ctx, info.WorkInfo)
 	if err != nil {
 		return StoreWorkHandle{}, err
 	}
 	h.admissionEnabled = enabled
+	h.bypassed = bypassed
 	return h, nil
 }
 
@@ -1643,6 +1652,9 @@ func (q *StoreWorkQueue) AdmittedWorkDone(h StoreWorkHandle, ingestedIntoL0Bytes
 	{
 		q.mu.Lock()
 		q.mu.stats.admittedCount++
+		if h.bypassed {
+			q.mu.stats.bypassedAdmittedCount++
+		}
 		if h.writeBytes != 0 {
 			q.mu.stats.admittedWithBytesCount++
 			q.mu.stats.admittedAccountedBytes += uint64(h.writeBytes)

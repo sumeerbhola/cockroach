@@ -3769,6 +3769,14 @@ func (n KVAdmissionControllerImpl) AdmitKVWork(
 		// number of tokens available.
 		if ba.IsWrite() && !ba.IsSingleHeartbeatTxnRequest() {
 			ah.storeAdmissionQ = n.storeGrantCoords.TryGetQueueForStore(int32(ba.Replica.StoreID))
+			if bypassAdmission {
+				var b strings.Builder
+				for _, ru := range ba.Requests {
+					m := ru.GetInner().Method()
+					fmt.Fprintf(&b, "%v ", m)
+				}
+				log.Infof(ctx, "bypass: %s", b.String())
+			}
 		}
 		admissionEnabled := true
 		if ah.storeAdmissionQ != nil {

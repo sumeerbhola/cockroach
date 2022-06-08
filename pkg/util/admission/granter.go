@@ -1545,7 +1545,8 @@ type granterWithIOTokens interface {
 // cumulative values are mutually consistent.
 type storeAdmissionStats struct {
 	// Total admission requests.
-	admittedCount uint64
+	admittedCount         uint64
+	bypassedAdmittedCount uint64
 	// Total admission requests that provided their byte size. The remaining
 	// provided a byte size of 0.
 	// INVARIANT: admittedWithBytesCount <= admittedCount
@@ -1752,7 +1753,8 @@ type adjustTokensAuxComputations struct {
 	intL0AddedBytes     int64
 	intL0CompactedBytes int64
 
-	intAdmittedCount uint64
+	intAdmittedCount         uint64
+	intBypassedAdmittedCount uint64
 
 	intAdmittedBytes, intIngestedBytes uint64
 	intIngestedAccountedL0Bytes        uint64
@@ -1795,6 +1797,7 @@ func (*ioLoadListener) adjustTokensInner(
 
 	// intAdmittedCount is the number of requests admitted since the last token adjustment.
 	intAdmittedCount := cumAdmissionStats.admittedCount - prev.cumAdmissionStats.admittedCount
+	intBypassedAdmittedCount := cumAdmissionStats.bypassedAdmittedCount - prev.cumAdmissionStats.bypassedAdmittedCount
 	doLog := true
 	if intAdmittedCount <= 0 {
 		intAdmittedCount = 1
@@ -1935,6 +1938,7 @@ func (*ioLoadListener) adjustTokensInner(
 			intL0AddedBytes:              intL0AddedBytes,
 			intL0CompactedBytes:          intL0CompactedBytes,
 			intAdmittedCount:             intAdmittedCount,
+			intBypassedAdmittedCount:     intBypassedAdmittedCount,
 			intAdmittedBytes:             intAdmittedBytes,
 			intIngestedBytes:             intIngestedAccountedBytes,
 			intIngestedAccountedL0Bytes:  intIngestedAccountedL0Bytes,
@@ -1973,8 +1977,9 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 	// The unhappy case - extra bytes that showed up in L0 but we didn't account
 	// for them with any request. If this is large, traffic patterns possibly changed
 	// recently.
-	p.Printf("%s unacc [≈%s/req, n=%d], ",
-		ib(res.aux.intUnaccountedL0Bytes), ib(int64(res.smoothedIntPerWorkUnaccountedL0Bytes)), res.aux.intAdmittedCount)
+	p.Printf("%s unacc [≈%s/req, n=%d, bypassed=%d], ",
+		ib(res.aux.intUnaccountedL0Bytes), ib(int64(res.smoothedIntPerWorkUnaccountedL0Bytes)),
+		res.aux.intAdmittedCount, res.aux.intBypassedAdmittedCount)
 	// How much got compacted out of L0 recently.
 	p.Printf("compacted %s [≈%s]; ", ib(res.aux.intL0CompactedBytes), ib(res.smoothedIntL0CompactedBytes))
 
