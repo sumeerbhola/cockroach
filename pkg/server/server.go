@@ -389,6 +389,17 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	stopper.AddCloser(stop.CloserFn(func() {
 		goschedstats.UnregisterRunnableCountCallback(cbID)
 	}))
+	{
+		underloadedThreshold :=
+			goschedstats.UnderloadedRunnablePerProcThreshold.Get(&st.SV)
+		goschedstats.SetUnderloadedRunnablePerProcThreshold(underloadedThreshold)
+		goschedstats.UnderloadedRunnablePerProcThreshold.SetOnChange(&st.SV,
+			func(ctx context.Context) {
+				underloadedThreshold :=
+					goschedstats.UnderloadedRunnablePerProcThreshold.Get(&st.SV)
+				goschedstats.SetUnderloadedRunnablePerProcThreshold(underloadedThreshold)
+			})
+	}
 	stopper.AddCloser(gcoords)
 
 	dbCtx := kv.DefaultDBContext(stopper)

@@ -11,9 +11,12 @@
 package goschedstats
 
 import (
+	"context"
 	"sync/atomic"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -67,9 +70,22 @@ var _ = numRunnableGoroutines
 const samplePeriodShort = time.Millisecond
 const samplePeriodLong = 250 * time.Millisecond
 
-// The system is underloaded if the number of runnable goroutines per proc
-// is below this threshold.
-const underloadedRunnablePerProcThreshold = 1 * toFixedPoint
+// The system is underloaded if the number of runnable goroutines per proc is
+// below the threshold of 0.25. This 0.25 constant was arbitrarily chosen.
+//
+// TODO(sumeer): consider ways to either always use 1ms intervals or make
+// admission control slot changes robust to 250ms intervals (under very low
+// utilization). This does not really
+
+const underloadedRunnablePerProcThresholdFloat = 0.25
+const defaultUnderloadedRunnablePerProcThreshold = uint64(toFixedPoint * underloadedRunnablePerProcThresholdFloat)
+
+var curUnderloadedRunnablePerProcThreshold = uint64(defaultUnderloadedRunnablePerProcThreshold)
+
+var UnderloadedRunnablePerProcThreshold = settings.RegisterFloatSetting(
+	settings.SystemOnly,
+	"goschedstats.underloaded-runnable-per-proc", "",
+	underloadedRunnablePerProcThresholdFloat)
 
 // We "report" the average value every reportingPeriod.
 // Note: if this is changed from 1s, CumulativeNormalizedRunnableGoroutines()
@@ -130,6 +146,15 @@ func RegisterRunnableCountCallback(cb RunnableCountCallback) (id int64) {
 		id:                    id,
 	})
 	return id
+}
+
+func SetUnderloadedRunnablePerProcThreshold(f float64) {
+	if f < 0 {
+		log.Warningf(context.Background(), "underloaded threshold cannot be negative %f", f)
+		return
+	}
+	newThreshold := uint64(f * toFixedPoint)
+	atomic.StoreUint64(&curUnderloadedRunnablePerProcThreshold, newThreshold)
 }
 
 // UnregisterRunnableCountCallback unregisters the callback to be run with the
@@ -210,6 +235,8 @@ func (s *schedStatsTicker) getStatsOnTick(
 			s.localEWMA = (avgValue + s.localEWMA) / 2
 			atomic.StoreUint64(&ewma, s.localEWMA)
 		}
+		underloadedRunnablePerProcThreshold :=
+			atomic.LoadUint64(&curUnderloadedRunnablePerProcThreshold)
 		nextPeriod := samplePeriodShort
 		// Both the mean over the last 1s, and the exponentially weighted average
 		// must be low for the system to be considered underloaded.
