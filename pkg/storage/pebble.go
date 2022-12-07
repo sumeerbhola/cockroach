@@ -534,10 +534,10 @@ func DefaultPebbleOptions() *pebble.Options {
 		FS:                          vfs.Default,
 		L0CompactionThreshold:       2,
 		L0StopWritesThreshold:       1000,
-		LBaseMaxBytes:               64 << 20, // 64 MB
+		LBaseMaxBytes:               lBaseMaxSize,
 		Levels:                      make([]pebble.LevelOptions, 7),
 		MaxConcurrentCompactions:    func() int { return maxConcurrentCompactions },
-		MemTableSize:                64 << 20, // 64 MB
+		MemTableSize:                int(memTableSize),
 		MemTableStopWritesThreshold: 4,
 		Merger:                      MVCCMerger,
 		BlockPropertyCollectors:     PebbleBlockPropertyCollectors,
@@ -567,6 +567,7 @@ func DefaultPebbleOptions() *pebble.Options {
 		}
 		return nil
 	}
+	opts.Experimental.L0CompactionConcurrency = 2
 
 	for i := 0; i < len(opts.Levels); i++ {
 		l := &opts.Levels[i]

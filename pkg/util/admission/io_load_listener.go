@@ -98,7 +98,7 @@ var L0SubLevelCountOverloadThreshold = settings.RegisterIntSetting(
 //
 // We've set these overload thresholds in a way that allows the system to
 // absorb short durations (say a few minutes) of heavy write load.
-const l0FileCountOverloadThreshold = 1000
+const l0FileCountOverloadThreshold = 4000
 const l0SubLevelCountOverloadThreshold = 20
 
 // ioLoadListener adjusts tokens in kvStoreTokenGranter for IO, specifically due to

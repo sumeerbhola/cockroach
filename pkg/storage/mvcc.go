@@ -117,6 +117,10 @@ var rocksdbConcurrency = envutil.EnvOrDefaultInt(
 		return max
 	}())
 
+var memTableSize = envutil.EnvOrDefaultBytes("COCKROACH_MEMTABLE_SIZE", 64<<20)
+
+var lBaseMaxSize = envutil.EnvOrDefaultBytes("COCKROACH_LBASE_MAX_SIZE", 64<<20)
+
 // MakeValue returns the inline value.
 func MakeValue(meta enginepb.MVCCMetadata) roachpb.Value {
 	return roachpb.Value{RawBytes: meta.RawBytes}

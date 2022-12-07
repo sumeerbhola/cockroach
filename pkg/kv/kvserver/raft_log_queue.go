@@ -139,7 +139,7 @@ const (
 	RaftLogQueueStaleSize = 64 << 10
 	// Allow a limited number of Raft log truncations to be processed
 	// concurrently.
-	raftLogQueueConcurrency = 4
+	raftLogQueueConcurrency = 16
 )
 
 // raftLogQueue manages a queue of replicas slated to have their raft logs
