@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -40,6 +41,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors/oserror"
+	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/stretchr/testify/require"
 )
 
@@ -1771,4 +1774,140 @@ func makeBenchRowKey(b *testing.B, buf []byte, id int, columnFamily uint32) roac
 		require.NoError(b, err)
 	}
 	return keys.MakeFamilyKey(buf, columnFamily)
+}
+
+func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
+	skip.UnderShort(b, "setting up takes too long")
+	defer log.Scope(b).Close(b)
+
+	st := cluster.MakeTestingClusterSettings()
+	ctx := context.Background()
+	eng, err := Open(ctx, InMemory(), CacheSize(testCacheSize),
+		func(cfg *engineConfig) error {
+			cfg.Settings = st
+			return nil
+		},
+		func(cfg *engineConfig) error {
+			cfg.Opts.DisableAutomaticCompactions = true
+			return nil
+		})
+	require.NoError(b, err)
+	defer eng.Close()
+	value := roachpb.MakeValueFromString("value")
+	numVersions := 6
+	txnIDCount := 2 * numVersions
+	adjustTxnID := func(txnID int) int {
+		// Assign txn IDs in a deterministic way that will mimic the end result of
+		// random assignment -- the live intent is centered between dead intents,
+		// when we have separated intents.
+		if txnID%2 == 0 {
+			txnID = txnIDCount - txnID
+		}
+		return txnID
+	}
+	const totalNumKeys = 1000
+	var prevTxn roachpb.Transaction
+	var numPrevKeys int
+	for i := 1; i <= numVersions+1; i++ {
+		lockUpdate := roachpb.LockUpdate{
+			Txn:    prevTxn.TxnMeta,
+			Status: roachpb.COMMITTED,
+		}
+		txnID := adjustTxnID(i)
+		txnUUID := uuid.FromUint128(uint128.FromInts(0, uint64(txnID)))
+		ts := hlc.Timestamp{WallTime: int64(i)}
+		txn := roachpb.Transaction{
+			TxnMeta: enginepb.TxnMeta{
+				ID:             txnUUID,
+				Key:            []byte("foo"),
+				WriteTimestamp: ts,
+				MinTimestamp:   ts,
+			},
+			Status:                 roachpb.PENDING,
+			ReadTimestamp:          ts,
+			GlobalUncertaintyLimit: ts,
+		}
+		prevTxn = txn
+		batch := eng.NewBatch()
+		// Resolve the previous intents.
+		for j := 0; j < numPrevKeys; j++ {
+			key := makeKey(nil, j)
+			lu := lockUpdate
+			lu.Key = key
+			found, err := MVCCResolveWriteIntent(ctx, batch, nil, lu)
+			require.Equal(b, true, found)
+			require.NoError(b, err)
+		}
+		numKeys := totalNumKeys
+		if i == numVersions+1 {
+			numKeys = 0
+		} else if i != 1 {
+			numKeys = 10
+		}
+		for j := 0; j < numKeys; j++ {
+			key := makeKey(nil, j)
+			require.NoError(b, MVCCPut(ctx, batch, nil, key, ts, hlc.ClockTimestamp{}, value, &txn))
+		}
+		numPrevKeys = numKeys
+		reader := batch.(*pebbleBatch).batch.Reader()
+		kind, key, value, ok := reader.Next()
+		type kvPair struct {
+			key   []byte
+			kind  pebble.InternalKeyKind
+			value []byte
+		}
+		var kvPairs []kvPair
+		for ; ok; kind, key, value, ok = reader.Next() {
+			kvPairs = append(kvPairs, kvPair{key: key, kind: kind, value: value})
+		}
+		sort.Slice(kvPairs, func(i, j int) bool {
+			cmp := EngineKeyCompare(kvPairs[i].key, kvPairs[j].key)
+			if cmp == 0 {
+				// Should not happen since we resolve in a different batch from the
+				// one where we wrote the intent.
+				b.Fatalf("found equal user keys in same batch")
+			}
+			return cmp < 0
+		})
+		sstFileName := fmt.Sprintf("tmp-ingest-%d", i)
+		sstFile, err := eng.Create(sstFileName)
+		require.NoError(b, err)
+		format := sstable.TableFormatPebblev2
+		opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
+		writer := sstable.NewWriter(sstFile, opts)
+		for _, kv := range kvPairs {
+			require.NoError(b, writer.Add(
+				pebble.InternalKey{UserKey: kv.key, Trailer: uint64(kv.kind)}, kv.value))
+		}
+		require.NoError(b, writer.Close())
+		batch.Close()
+		require.NoError(b, eng.IngestExternalFiles(ctx, []string{sstFileName}))
+	}
+	for i := 0; i < b.N; i++ {
+		rw := eng.NewReadOnly(StandardDurability)
+		ts := hlc.Timestamp{WallTime: int64(numVersions) + 5}
+		startKey := makeKey(nil, 0)
+		endKey := makeKey(nil, totalNumKeys+1)
+		iter := newMVCCIterator(
+			rw, ts, false, IterOptions{
+				KeyTypes:   IterKeyTypePointsAndRanges,
+				LowerBound: startKey,
+				UpperBound: endKey,
+			},
+		)
+		res, err := mvccScanToKvs(ctx, iter, startKey, endKey,
+			hlc.Timestamp{WallTime: int64(numVersions) + 5}, MVCCScanOptions{})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if res.NumKeys != totalNumKeys {
+			b.Fatalf("expected %d keys, and found %d", totalNumKeys, res.NumKeys)
+		}
+		if i == 0 || i == b.N-1 {
+			stats := iter.Stats()
+			fmt.Printf("first: %t\nstats: %s\n", i == 0, stats.Stats.String())
+		}
+		iter.Close()
+		rw.Close()
+	}
 }
