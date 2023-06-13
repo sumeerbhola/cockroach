@@ -16,8 +16,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -41,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uint128"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/errors/oserror"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/objstorage/objstorageprovider"
 	"github.com/cockroachdb/pebble/sstable"
@@ -657,31 +654,40 @@ type engineMaker func(testing.TB, string) Engine
 //
 // The creation of the database is time consuming, so the caller can choose
 // whether to use a temporary or permanent location.
-func loadTestData(dir string, numKeys, numBatches, batchTimeSpan, valueBytes int) (Engine, error) {
+func loadTestData(
+	t *testing.T, dir string, numKeys, numBatches, batchTimeSpan, valueBytes int,
+) (Engine, error) {
 	ctx := context.Background()
 
-	exists := true
-	if _, err := os.Stat(dir); oserror.IsNotExist(err) {
-		exists = false
-	}
+	/*
+		exists := false
+		if _, err := os.Stat(dir); oserror.IsNotExist(err) {
+			exists = false
+		}
+
+	*/
+	seed := int64(timeutil.Now().UnixNano())
+	rng := rand.New(rand.NewSource(seed))
+	t.Logf("seed: %d", seed)
 
 	eng, err := Open(
 		context.Background(),
-		Filesystem(dir),
-		cluster.MakeTestingClusterSettings())
+		InMemory(),
+		cluster.MakeTestingClusterSettings(),
+		DataBlockSize(rng.Intn(1000)+1), IndexBlockSize(rng.Intn(1000)+1), TargetFileSize(int64(rng.Intn(5000)+1)))
 	if err != nil {
 		return nil, err
 	}
 
-	if exists {
-		testutils.ReadAllFiles(filepath.Join(dir, "*"))
-		return eng, nil
-	}
+	/*
+		if exists {
+			testutils.ReadAllFiles(filepath.Join(dir, "*"))
+			return eng, nil
+		}
+
+	*/
 
 	log.Infof(context.Background(), "creating test data: %s", dir)
-
-	// Generate the same data every time.
-	rng := rand.New(rand.NewSource(1449168817))
 
 	keys := make([]roachpb.Key, numKeys)
 	for i := 0; i < numKeys; i++ {

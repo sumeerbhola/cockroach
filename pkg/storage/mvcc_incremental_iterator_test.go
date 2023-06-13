@@ -1428,7 +1428,8 @@ func TestMVCCIterateTimeBound(t *testing.T) {
 	const batchTimeSpan = 10
 	const valueSize = 8
 
-	eng, err := loadTestData(filepath.Join(dir, "mvcc_data"),
+	// t.Logf("test dir: %s", filepath.Join(dir, "mvcc_data"))
+	eng, err := loadTestData(t, filepath.Join(dir, "mvcc_data"),
 		numKeys, numBatches, batchTimeSpan, valueSize)
 	if err != nil {
 		t.Fatal(err)

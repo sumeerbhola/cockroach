@@ -107,6 +107,26 @@ func BlockSize(size int) ConfigOption {
 	}
 }
 
+// BlockSize sets the engine block size, primarily for testing purposes.
+func DataBlockSize(size int) ConfigOption {
+	return func(cfg *engineConfig) error {
+		for i := range cfg.Opts.Levels {
+			cfg.Opts.Levels[i].BlockSize = size
+		}
+		return nil
+	}
+}
+
+// BlockSize sets the engine block size, primarily for testing purposes.
+func IndexBlockSize(size int) ConfigOption {
+	return func(cfg *engineConfig) error {
+		for i := range cfg.Opts.Levels {
+			cfg.Opts.Levels[i].IndexBlockSize = size
+		}
+		return nil
+	}
+}
+
 // TargetFileSize sets the target file size across all levels of the LSM,
 // primarily for testing purposes.
 func TargetFileSize(size int64) ConfigOption {
