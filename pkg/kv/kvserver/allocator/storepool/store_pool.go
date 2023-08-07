@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/gossip"
@@ -583,7 +584,7 @@ func (sp *StorePool) GetStoreDescriptor(storeID roachpb.StoreID) (roachpb.StoreD
 // DecommissioningReplicas filters out replicas on decommissioning node/store
 // from the provided repls and returns them in a slice.
 func (sp *StorePool) DecommissioningReplicas(
-	repls []roachpb.ReplicaDescriptor,
+	ctx context.Context, repls []roachpb.ReplicaDescriptor, optionalRangeID roachpb.RangeID,
 ) (decommissioningReplicas []roachpb.ReplicaDescriptor) {
 	sp.DetailsMu.Lock()
 	defer sp.DetailsMu.Unlock()
@@ -594,12 +595,23 @@ func (sp *StorePool) DecommissioningReplicas(
 	timeUntilStoreDead := TimeUntilStoreDead.Get(&sp.St.SV)
 	timeAfterStoreSuspect := TimeAfterStoreSuspect.Get(&sp.St.SV)
 
+	var buf strings.Builder
+	if optionalRangeID > 0 {
+		fmt.Fprintf(&buf, "DecommissioningReplicas: r%d", optionalRangeID)
+	}
 	for _, repl := range repls {
 		detail := sp.GetStoreDetailLocked(repl.StoreID)
-		switch detail.status(now, timeUntilStoreDead, sp.NodeLivenessFn, timeAfterStoreSuspect) {
+		status := detail.status(now, timeUntilStoreDead, sp.NodeLivenessFn, timeAfterStoreSuspect)
+		if optionalRangeID > 0 {
+			fmt.Fprintf(&buf, "  (n%d,s%d,%d):%d", repl.NodeID, repl.StoreID, repl.ReplicaID, status)
+		}
+		switch status {
 		case storeStatusDecommissioning:
 			decommissioningReplicas = append(decommissioningReplicas, repl)
 		}
+	}
+	if optionalRangeID > 0 {
+		log.KvDistribution.Infof(ctx, "%s", buf.String())
 	}
 	return
 }
@@ -700,7 +712,10 @@ func (sp *StorePool) storeStatus(storeID roachpb.StoreID) (storeStatus, error) {
 // past), and stores that are marked as draining are considered live. Otherwise,
 // they are excluded from the returned slices.
 func (sp *StorePool) LiveAndDeadReplicas(
-	repls []roachpb.ReplicaDescriptor, includeSuspectAndDrainingStores bool,
+	ctx context.Context,
+	repls []roachpb.ReplicaDescriptor,
+	includeSuspectAndDrainingStores bool,
+	optionalRangeID roachpb.RangeID,
 ) (liveReplicas, deadReplicas []roachpb.ReplicaDescriptor) {
 	sp.DetailsMu.Lock()
 	defer sp.DetailsMu.Unlock()
@@ -709,10 +724,17 @@ func (sp *StorePool) LiveAndDeadReplicas(
 	timeUntilStoreDead := TimeUntilStoreDead.Get(&sp.St.SV)
 	timeAfterStoreSuspect := TimeAfterStoreSuspect.Get(&sp.St.SV)
 
+	var buf strings.Builder
+	if optionalRangeID > 0 {
+		fmt.Fprintf(&buf, "LiveAndDeadReplicas: r%d", optionalRangeID)
+	}
 	for _, repl := range repls {
 		detail := sp.GetStoreDetailLocked(repl.StoreID)
 		// Mark replica as dead if store is dead.
 		status := detail.status(now, timeUntilStoreDead, sp.NodeLivenessFn, timeAfterStoreSuspect)
+		if optionalRangeID > 0 {
+			fmt.Fprintf(&buf, "  (n%d,s%d,%d):%d", repl.NodeID, repl.StoreID, repl.ReplicaID, status)
+		}
 		switch status {
 		case storeStatusDead:
 			deadReplicas = append(deadReplicas, repl)
@@ -731,6 +753,9 @@ func (sp *StorePool) LiveAndDeadReplicas(
 		default:
 			log.Fatalf(context.TODO(), "unknown store status %d", status)
 		}
+	}
+	if optionalRangeID > 0 {
+		log.KvDistribution.Infof(ctx, "%s", buf.String())
 	}
 	return
 }

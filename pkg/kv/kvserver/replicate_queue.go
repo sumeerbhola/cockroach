@@ -650,7 +650,8 @@ func (rq *replicateQueue) shouldQueue(
 		log.KvDistribution.VEventf(ctx, 2, "lease transfer needed, enqueuing")
 		return true, 0
 	}
-	if !repl.LeaseStatusAt(ctx, now).IsValid() {
+	leaseStatus := repl.LeaseStatusAt(ctx, now)
+	if !leaseStatus.IsValid() {
 		// The lease for this range is currently invalid, if this replica is
 		// the raft leader then it is necessary that it acquires the lease. We
 		// enqueue it regardless of being a leader or follower, where the
@@ -658,7 +659,7 @@ func (rq *replicateQueue) shouldQueue(
 		// requirement that the expired lease belongs to this replica, as
 		// regardless of the lease history, the current leader should hold the
 		// lease.
-		log.KvDistribution.VEventf(ctx, 2, "invalid lease, enqueuing")
+		log.KvDistribution.VEventf(ctx, 2, "invalid lease, enqueuing %s", leaseStatus.String())
 		return true, 0
 	}
 
@@ -851,12 +852,8 @@ func (rq *replicateQueue) processOneChange(
 
 	voterReplicas := desc.Replicas().VoterDescriptors()
 	nonVoterReplicas := desc.Replicas().NonVoterDescriptors()
-	liveVoterReplicas, deadVoterReplicas := rq.store.cfg.StorePool.LiveAndDeadReplicas(
-		voterReplicas, true, /* includeSuspectAndDrainingStores */
-	)
-	liveNonVoterReplicas, deadNonVoterReplicas := rq.store.cfg.StorePool.LiveAndDeadReplicas(
-		nonVoterReplicas, true, /* includeSuspectAndDrainingStores */
-	)
+	liveVoterReplicas, deadVoterReplicas := rq.store.cfg.StorePool.LiveAndDeadReplicas(context.Background(), voterReplicas, true, -1)
+	liveNonVoterReplicas, deadNonVoterReplicas := rq.store.cfg.StorePool.LiveAndDeadReplicas(context.Background(), nonVoterReplicas, true, -1)
 
 	// NB: the replication layer ensures that the below operations don't cause
 	// unavailability; see:
@@ -931,7 +928,7 @@ func (rq *replicateQueue) processOneChange(
 
 	// Replace decommissioning replicas.
 	case allocatorimpl.AllocatorReplaceDecommissioningVoter:
-		decommissioningVoterReplicas := rq.store.cfg.StorePool.DecommissioningReplicas(voterReplicas)
+		decommissioningVoterReplicas := rq.store.cfg.StorePool.DecommissioningReplicas(ctx, voterReplicas, desc.RangeID)
 		if len(decommissioningVoterReplicas) == 0 {
 			log.KvDistribution.Infof(ctx, "nothing to decommission")
 			// Nothing to do.
@@ -952,7 +949,7 @@ func (rq *replicateQueue) processOneChange(
 		}
 		return requeue, nil
 	case allocatorimpl.AllocatorReplaceDecommissioningNonVoter:
-		decommissioningNonVoterReplicas := rq.store.cfg.StorePool.DecommissioningReplicas(nonVoterReplicas)
+		decommissioningNonVoterReplicas := rq.store.cfg.StorePool.DecommissioningReplicas(context.Background(), nonVoterReplicas, -1)
 		if len(decommissioningNonVoterReplicas) == 0 {
 			return false, nil
 		}
@@ -1484,13 +1481,9 @@ func (rq *replicateQueue) removeDecommissioning(
 	var decommissioningReplicas []roachpb.ReplicaDescriptor
 	switch targetType {
 	case allocatorimpl.VoterTarget:
-		decommissioningReplicas = rq.store.cfg.StorePool.DecommissioningReplicas(
-			desc.Replicas().VoterDescriptors(),
-		)
+		decommissioningReplicas = rq.store.cfg.StorePool.DecommissioningReplicas(ctx, desc.Replicas().VoterDescriptors(), desc.RangeID)
 	case allocatorimpl.NonVoterTarget:
-		decommissioningReplicas = rq.store.cfg.StorePool.DecommissioningReplicas(
-			desc.Replicas().NonVoterDescriptors(),
-		)
+		decommissioningReplicas = rq.store.cfg.StorePool.DecommissioningReplicas(context.Background(), desc.Replicas().NonVoterDescriptors(), -1)
 	default:
 		panic(fmt.Sprintf("unknown targetReplicaType: %s", targetType))
 	}

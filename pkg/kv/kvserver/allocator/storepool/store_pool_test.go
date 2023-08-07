@@ -502,7 +502,7 @@ func TestStorePoolFindDeadReplicas(t *testing.T) {
 		mnl.SetNodeStatus(roachpb.NodeID(i), livenesspb.NodeLivenessStatus_LIVE)
 	}
 
-	liveReplicas, deadReplicas := sp.LiveAndDeadReplicas(replicas, false /* includeSuspectAndDrainingStores */)
+	liveReplicas, deadReplicas := sp.LiveAndDeadReplicas(context.Background(), replicas, false, -1)
 	if len(liveReplicas) != 5 {
 		t.Fatalf("expected five live replicas, found %d (%v)", len(liveReplicas), liveReplicas)
 	}
@@ -513,7 +513,7 @@ func TestStorePoolFindDeadReplicas(t *testing.T) {
 	mnl.SetNodeStatus(4, livenesspb.NodeLivenessStatus_DEAD)
 	mnl.SetNodeStatus(5, livenesspb.NodeLivenessStatus_DEAD)
 
-	liveReplicas, deadReplicas = sp.LiveAndDeadReplicas(replicas, false /* includeSuspectNodes */)
+	liveReplicas, deadReplicas = sp.LiveAndDeadReplicas(context.Background(), replicas, false, -1)
 	if a, e := liveReplicas, replicas[:3]; !reflect.DeepEqual(a, e) {
 		t.Fatalf("expected live replicas %+v; got %+v", e, a)
 	}
@@ -524,7 +524,7 @@ func TestStorePoolFindDeadReplicas(t *testing.T) {
 	// Mark node 4 as merely unavailable.
 	mnl.SetNodeStatus(4, livenesspb.NodeLivenessStatus_UNAVAILABLE)
 
-	liveReplicas, deadReplicas = sp.LiveAndDeadReplicas(replicas, false /* includeSuspectAndDrainingStores */)
+	liveReplicas, deadReplicas = sp.LiveAndDeadReplicas(context.Background(), replicas, false, -1)
 	if a, e := liveReplicas, replicas[:3]; !reflect.DeepEqual(a, e) {
 		t.Fatalf("expected live replicas %+v; got %+v", e, a)
 	}
@@ -550,10 +550,7 @@ func TestStorePoolDefaultState(t *testing.T) {
 		livenesspb.NodeLivenessStatus_DEAD)
 	defer stopper.Stop(ctx)
 
-	liveReplicas, deadReplicas := sp.LiveAndDeadReplicas(
-		[]roachpb.ReplicaDescriptor{{StoreID: 1}},
-		false, /* includeSuspectAndDrainingStores */
-	)
+	liveReplicas, deadReplicas := sp.LiveAndDeadReplicas(context.Background(), []roachpb.ReplicaDescriptor{{StoreID: 1}}, false, -1)
 	if len(liveReplicas) != 0 || len(deadReplicas) != 0 {
 		t.Errorf("expected 0 live and 0 dead replicas; got %v and %v", liveReplicas, deadReplicas)
 	}
@@ -809,7 +806,7 @@ func TestStorePoolDecommissioningReplicas(t *testing.T) {
 		mnl.SetNodeStatus(roachpb.NodeID(i), livenesspb.NodeLivenessStatus_LIVE)
 	}
 
-	liveReplicas, deadReplicas := sp.LiveAndDeadReplicas(replicas, false /* includeSuspectAndDrainingStores */)
+	liveReplicas, deadReplicas := sp.LiveAndDeadReplicas(context.Background(), replicas, false, -1)
 	if len(liveReplicas) != 5 {
 		t.Fatalf("expected five live replicas, found %d (%v)", len(liveReplicas), liveReplicas)
 	}
@@ -821,7 +818,7 @@ func TestStorePoolDecommissioningReplicas(t *testing.T) {
 	// Mark node 5 as dead.
 	mnl.SetNodeStatus(5, livenesspb.NodeLivenessStatus_DEAD)
 
-	liveReplicas, deadReplicas = sp.LiveAndDeadReplicas(replicas, false /* includeSuspectAndDrainingStores */)
+	liveReplicas, deadReplicas = sp.LiveAndDeadReplicas(context.Background(), replicas, false, -1)
 	// Decommissioning replicas are considered live.
 	if a, e := liveReplicas, replicas[:4]; !reflect.DeepEqual(a, e) {
 		t.Fatalf("expected live replicas %+v; got %+v", e, a)
@@ -830,7 +827,7 @@ func TestStorePoolDecommissioningReplicas(t *testing.T) {
 		t.Fatalf("expected dead replicas %+v; got %+v", e, a)
 	}
 
-	decommissioningReplicas := sp.DecommissioningReplicas(replicas)
+	decommissioningReplicas := sp.DecommissioningReplicas(context.Background(), replicas, -1)
 	if a, e := decommissioningReplicas, replicas[3:4]; !reflect.DeepEqual(a, e) {
 		t.Fatalf("expected decommissioning replicas %+v; got %+v", e, a)
 	}

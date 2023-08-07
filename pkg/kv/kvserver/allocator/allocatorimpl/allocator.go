@@ -663,15 +663,17 @@ func (a *Allocator) computeAction(
 	// After that we handle rebalancing related actions, followed by removal
 	// actions.
 	haveVoters := len(voterReplicas)
-	decommissioningVoters := a.StorePool.DecommissioningReplicas(voterReplicas)
-	{
-		var buf strings.Builder
-		fmt.Fprintf(&buf, "r%d: decommissioning voters:", rangeID)
-		for i := range decommissioningVoters {
-			fmt.Fprintf(&buf, " (n%d,s%d,%d)", decommissioningVoters[i].NodeID, decommissioningVoters[i].StoreID, decommissioningVoters[i].ReplicaID)
+	decommissioningVoters := a.StorePool.DecommissioningReplicas(ctx, voterReplicas, rangeID)
+	/*
+		{
+			var buf strings.Builder
+			fmt.Fprintf(&buf, "r%d: decommissioning voters:", rangeID)
+			for i := range decommissioningVoters {
+				fmt.Fprintf(&buf, " (n%d,s%d,%d)", decommissioningVoters[i].NodeID, decommissioningVoters[i].StoreID, decommissioningVoters[i].ReplicaID)
+			}
+			log.KvDistribution.Infof(ctx, "%s", buf.String())
 		}
-		log.KvDistribution.Infof(ctx, "%s", buf.String())
-	}
+	*/
 	// Node count including dead nodes but excluding
 	// decommissioning/decommissioned nodes.
 	clusterNodes := a.StorePool.ClusterNodeCount()
@@ -700,16 +702,25 @@ func (a *Allocator) computeAction(
 	// heartbeat in the recent past. This means we won't move those replicas
 	// elsewhere (for a regular rebalance or for decommissioning).
 	const includeSuspectAndDrainingStores = true
-	liveVoters, deadVoters := a.StorePool.LiveAndDeadReplicas(voterReplicas, includeSuspectAndDrainingStores)
-	if len(deadVoters) > 0 {
-		var buf strings.Builder
-		fmt.Fprintf(&buf, "r%d: dead voters:", rangeID)
-		for i := range deadVoters {
-			fmt.Fprintf(&buf, " (n%d,s%d,%d)", deadVoters[i].NodeID, deadVoters[i].StoreID, deadVoters[i].ReplicaID)
+	liveVoters, deadVoters := a.StorePool.LiveAndDeadReplicas(ctx, voterReplicas, includeSuspectAndDrainingStores, rangeID)
+	/*
+		if len(deadVoters) > 0 {
+			var buf strings.Builder
+			fmt.Fprintf(&buf, "r%d: dead voters:", rangeID)
+			for i := range deadVoters {
+				fmt.Fprintf(&buf, " (n%d,s%d,%d)", deadVoters[i].NodeID, deadVoters[i].StoreID, deadVoters[i].ReplicaID)
+			}
+			log.KvDistribution.Infof(ctx, "%s", buf.String())
 		}
-		log.KvDistribution.Infof(ctx, "%s", buf.String())
-	}
-
+		if len(liveVoters) > 0 {
+			var buf strings.Builder
+			fmt.Fprintf(&buf, "r%d: live voters:", rangeID)
+			for i := range deadVoters {
+				fmt.Fprintf(&buf, " (n%d,s%d,%d)", deadVoters[i].NodeID, deadVoters[i].StoreID, deadVoters[i].ReplicaID)
+			}
+			log.KvDistribution.Infof(ctx, "%s", buf.String())
+		}
+	*/
 	if len(liveVoters) < quorum {
 		// Do not take any replacement/removal action if we do not have a quorum of
 		// live voters. If we're correctly assessing the unavailable state of the
@@ -787,9 +798,7 @@ func (a *Allocator) computeAction(
 		return action, action.Priority()
 	}
 
-	liveNonVoters, deadNonVoters := a.StorePool.LiveAndDeadReplicas(
-		nonVoterReplicas, includeSuspectAndDrainingStores,
-	)
+	liveNonVoters, deadNonVoters := a.StorePool.LiveAndDeadReplicas(context.Background(), nonVoterReplicas, includeSuspectAndDrainingStores, -1)
 	if haveNonVoters == neededNonVoters && len(deadNonVoters) > 0 {
 		// The range has non-voter(s) on a dead node that we should replace.
 		action = AllocatorReplaceDeadNonVoter
@@ -798,7 +807,7 @@ func (a *Allocator) computeAction(
 		return action, action.Priority()
 	}
 
-	decommissioningNonVoters := a.StorePool.DecommissioningReplicas(nonVoterReplicas)
+	decommissioningNonVoters := a.StorePool.DecommissioningReplicas(context.Background(), nonVoterReplicas, -1)
 	if haveNonVoters == neededNonVoters && len(decommissioningNonVoters) > 0 {
 		// The range has non-voter(s) on a decommissioning node that we should
 		// replace.
@@ -1573,9 +1582,7 @@ func (a *Allocator) ValidLeaseTargets(
 		}
 		candidates = append(candidates, existing[i])
 	}
-	candidates, _ = a.StorePool.LiveAndDeadReplicas(
-		candidates, false, /* includeSuspectAndDrainingStores */
-	)
+	candidates, _ = a.StorePool.LiveAndDeadReplicas(context.Background(), candidates, false, -1)
 
 	if a.knobs == nil || !a.knobs.AllowLeaseTransfersToReplicasNeedingSnapshots {
 		// Only proceed with the lease transfer if we are also the raft leader (we
@@ -1665,9 +1672,7 @@ func (a *Allocator) leaseholderShouldMoveDueToPreferences(
 	}
 
 	// Exclude suspect/draining/dead stores.
-	candidates, _ := a.StorePool.LiveAndDeadReplicas(
-		allExistingReplicas, false, /* includeSuspectAndDrainingStores */
-	)
+	candidates, _ := a.StorePool.LiveAndDeadReplicas(context.Background(), allExistingReplicas, false, -1)
 	// If there are any replicas that do match lease preferences, then we check if
 	// the existing leaseholder is one of them.
 	preferred := a.PreferredLeaseholders(conf, candidates)

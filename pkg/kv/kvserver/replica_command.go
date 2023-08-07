@@ -2220,7 +2220,9 @@ type changeReplicasTxnArgs struct {
 	// stores that have failed a liveness heartbeat in the recent past) are
 	// considered live. Otherwise, they are excluded from the returned slices.
 	liveAndDeadReplicas func(
+		ctx context.Context,
 		repls []roachpb.ReplicaDescriptor, includeSuspectAndDrainingStores bool,
+		optionalRangeID roachpb.RangeID,
 	) (liveReplicas, deadReplicas []roachpb.ReplicaDescriptor)
 
 	logChange                            logChangeFn
@@ -2363,8 +2365,8 @@ func execChangeReplicasTxn(
 				// Note that the allocator will avoid rebalancing to stores that are
 				// currently marked suspect. See uses of StorePool.getStoreList() in
 				// allocator.go.
-				liveReplicas, _ := args.liveAndDeadReplicas(replicas.Descriptors(),
-					true /* includeSuspectAndDrainingStores */)
+				liveReplicas, _ := args.liveAndDeadReplicas(context.Background(), replicas.Descriptors(),
+					true /* includeSuspectAndDrainingStores */, -1)
 				if !replicas.CanMakeProgress(
 					func(rDesc roachpb.ReplicaDescriptor) bool {
 						for _, inner := range liveReplicas {
