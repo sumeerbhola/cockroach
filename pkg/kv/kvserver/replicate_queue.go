@@ -864,6 +864,7 @@ func (rq *replicateQueue) processOneChange(
 
 	action, allocatorPrio := rq.allocator.ComputeAction(ctx, conf, desc)
 	log.KvDistribution.VEventf(ctx, 1, "next replica action: %s", action)
+	log.KvDistribution.Infof(ctx, "processOneChange: r%d/%d action: %s", repl.RangeID, repl.ReplicaID(), action.String())
 
 	switch action {
 	case allocatorimpl.AllocatorNoop, allocatorimpl.AllocatorRangeUnavailable:
@@ -932,6 +933,7 @@ func (rq *replicateQueue) processOneChange(
 	case allocatorimpl.AllocatorReplaceDecommissioningVoter:
 		decommissioningVoterReplicas := rq.store.cfg.StorePool.DecommissioningReplicas(voterReplicas)
 		if len(decommissioningVoterReplicas) == 0 {
+			log.KvDistribution.Infof(ctx, "nothing to decommission")
 			// Nothing to do.
 			return false, nil
 		}
@@ -945,6 +947,7 @@ func (rq *replicateQueue) processOneChange(
 			ctx, repl, liveVoterReplicas, liveNonVoterReplicas, removeIdx, allocatorimpl.Decommissioning, allocatorPrio, dryRun)
 		rq.metrics.trackResultByAllocatorAction(ctx, action, err, dryRun)
 		if err != nil {
+			log.KvDistribution.Infof(ctx, "requeue: %t, err: %s", requeue, err.Error())
 			return requeue, decommissionPurgatoryError{err}
 		}
 		return requeue, nil

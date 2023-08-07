@@ -639,7 +639,7 @@ func (a *Allocator) ComputeAction(
 	}
 
 	return a.computeAction(ctx, conf, desc.Replicas().VoterDescriptors(),
-		desc.Replicas().NonVoterDescriptors())
+		desc.Replicas().NonVoterDescriptors(), desc.RangeID)
 
 }
 
@@ -648,6 +648,7 @@ func (a *Allocator) computeAction(
 	conf roachpb.SpanConfig,
 	voterReplicas []roachpb.ReplicaDescriptor,
 	nonVoterReplicas []roachpb.ReplicaDescriptor,
+	rangeID roachpb.RangeID,
 ) (action AllocatorAction, adjustedPriority float64) {
 	// NB: The ordering of the checks in this method is intentional. The order in
 	// which these actions are returned by this method determines the relative
@@ -663,6 +664,14 @@ func (a *Allocator) computeAction(
 	// actions.
 	haveVoters := len(voterReplicas)
 	decommissioningVoters := a.StorePool.DecommissioningReplicas(voterReplicas)
+	{
+		var buf strings.Builder
+		fmt.Fprintf(&buf, "r%d: decommissioning voters:", rangeID)
+		for i := range decommissioningVoters {
+			fmt.Fprintf(&buf, " (n%d,s%d,%d)", decommissioningVoters[i].NodeID, decommissioningVoters[i].StoreID, decommissioningVoters[i].ReplicaID)
+		}
+		log.KvDistribution.Infof(ctx, "%s", buf.String())
+	}
 	// Node count including dead nodes but excluding
 	// decommissioning/decommissioned nodes.
 	clusterNodes := a.StorePool.ClusterNodeCount()
@@ -692,6 +701,14 @@ func (a *Allocator) computeAction(
 	// elsewhere (for a regular rebalance or for decommissioning).
 	const includeSuspectAndDrainingStores = true
 	liveVoters, deadVoters := a.StorePool.LiveAndDeadReplicas(voterReplicas, includeSuspectAndDrainingStores)
+	if len(deadVoters) > 0 {
+		var buf strings.Builder
+		fmt.Fprintf(&buf, "r%d: dead voters:", rangeID)
+		for i := range deadVoters {
+			fmt.Fprintf(&buf, " (n%d,s%d,%d)", deadVoters[i].NodeID, deadVoters[i].StoreID, deadVoters[i].ReplicaID)
+		}
+		log.KvDistribution.Infof(ctx, "%s", buf.String())
+	}
 
 	if len(liveVoters) < quorum {
 		// Do not take any replacement/removal action if we do not have a quorum of

@@ -372,7 +372,9 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 	c.Put(ctx, t.Cockroach(), "./cockroach")
 	settings := install.MakeClusterSettings()
 	settings.Env = append(settings.Env, "COCKROACH_SCAN_MAX_IDLE_TIME=5ms")
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), settings)
+	startOpts := option.DefaultStartOpts()
+	startOpts.RoachprodOpts.ExtraArgs = []string{"--vmodule=store_rebalancer=5,allocator=5,allocator_scorer=5,replicate_queue=5"}
+	c.Start(ctx, t.L(), startOpts, settings)
 
 	h := newDecommTestHelper(t, c)
 
@@ -729,6 +731,7 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 		if i := rand.Intn(2); i == 0 {
 			restartDownedNode = true
 		}
+		t.L().Printf("restartDownedNode=%t", restartDownedNode)
 
 		if !restartDownedNode {
 			// We want to test decommissioning a truly dead node. Make sure we
@@ -763,6 +766,7 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 			"--wait=all", "--format=csv"); err != nil {
 			t.Fatalf("decommission failed: %v", err)
 		}
+		t.L().Printf("finished decommissioning n%d (from n%d) in absentia\n", targetNode, runNode)
 
 		if restartDownedNode {
 			t.L().Printf("restarting n%d for verification\n", targetNode)
@@ -770,8 +774,10 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 			// Bring targetNode it back up to verify that its replicas still get
 			// removed.
 			c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, c.Node(targetNode))
+			t.L().Printf("finished restarting n%d for verification\n", targetNode)
 		}
 
+		t.L().Printf("second decommissioning n%d (from n%d)\n", targetNode, runNode)
 		// Run decommission a second time to wait until the replicas have
 		// all been GC'ed. Note that we specify "all" because even though
 		// the target node is now running, it may not be live by the time
@@ -781,6 +787,7 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 		if err != nil {
 			t.Fatalf("decommission failed: %v", err)
 		}
+		t.L().Printf("finished second decommissioning n%d (from n%d)\n", targetNode, runNode)
 
 		exp := [][]string{
 			decommissionHeader,
@@ -796,18 +803,25 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 			// ls` because it is decommissioned and not live.
 			if err := retry.WithMaxAttempts(ctx, retryOpts, 50, func() error {
 				runNode := h.getRandNode()
+				t.L().Printf("node ls (from n%d)\n", runNode)
 				o, err := execCLI(ctx, t, c, runNode, "node", "ls", "--format=csv")
+				t.L().Printf("done node ls (from n%d)\n", runNode)
 				if err != nil {
 					t.Fatalf("node-ls failed: %v", err)
 				}
 
 				var exp [][]string
+				var expDebug []string
 				// We expect an entry for every node we haven't decommissioned yet.
 				for i := 1; i <= c.Spec().NodeCount-len(h.randNodeBlocklist); i++ {
-					exp = append(exp, []string{fmt.Sprintf("[^%d]", targetNode)})
+					str := fmt.Sprintf("[^%d]", targetNode)
+					exp = append(exp, []string{str})
+					expDebug = append(expDebug, str)
 				}
 
-				return cli.MatchCSV(o, exp)
+				rv := cli.MatchCSV(o, exp)
+				t.L().Printf("node ls (from n%d) %t: actual %s expected %s\n", runNode, rv, o, strings.Join(expDebug, ", "))
+				return rv
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -815,7 +829,9 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 			// Ditto for `node status`
 			if err := retry.WithMaxAttempts(ctx, retryOpts, 50, func() error {
 				runNode := h.getRandNode()
+				t.L().Printf("node status (from n%d)\n", runNode)
 				o, err := execCLI(ctx, t, c, runNode, "node", "status", "--format=csv")
+				t.L().Printf("done node status (from n%d)\n", runNode)
 				if err != nil {
 					t.Fatalf("node-status failed: %v", err)
 				}
@@ -827,7 +843,9 @@ func runDecommissionRandomized(ctx context.Context, t test.Test, c cluster.Clust
 					expC = append(expC, fmt.Sprintf("[^%d].*", targetNode))
 				}
 				exp := h.expectIDsInStatusOut(expC, numCols)
-				return cli.MatchCSV(o, exp)
+				rv := cli.MatchCSV(o, exp)
+				t.L().Printf("node status (from n%d) %t: actual %s expected %s\n", runNode, rv, o, strings.Join(expC, ", "))
+				return rv
 			}); err != nil {
 				t.Fatal(err)
 			}
