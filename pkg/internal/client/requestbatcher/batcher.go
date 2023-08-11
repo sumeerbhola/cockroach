@@ -135,11 +135,51 @@ type Config struct {
 	// enforced. It is inadvisable to disable both MaxIdle and MaxWait.
 	MaxIdle time.Duration
 
-	// MaxTimeout limits the amount of time that sending a batch can run for
-	// before timing out. This is used to prevent batches from stalling
-	// indefinitely, for instance due to an unavailable range. If MaxTimeout is
-	// <= 0, then the send batch timeout is derived from the requests' deadlines
-	// if they exist.
+	// MaxTimeout limits the amount of time that a BatchRequest can run for
+	// before timing out. When the work for a batch is paginated into multiple
+	// BatchRequests, due to MaxKeysPerBatchReq or TargetBytesPerBatchReq, this
+	// applies to each individual request. It is used to prevent batches from
+	// stalling indefinitely, for instance due to an unavailable range. If
+	// MaxTimeout is <= 0, then the BatchRequest timeout is derived from the
+	// requests' deadlines if they exist.
+	//
+	// Commentary on choice of per BatchRequest timeout:
+	//
+	// Point intent resolution and ranged intent resolution are different in
+	// that for the latter we don't know up front the amount of work that will
+	// be needed. We default (in IntentResolver, when constructing
+	// RequestBatchers), to batching up to intentResolverBatchSize (100) point
+	// intent resolution requests within a single batch. For ranged intent
+	// resolution we're somewhat arbitrarily batching
+	// intentResolverRangeBatchSize (10) range intent resolution requests within
+	// a single batch. We are also telling the server(s) processing the batch
+	// that it should return with a resume span when the number of intents
+	// resolved for ranged intent resolution exceeds
+	// intentResolverRangeRequestSize (200). 200 is larger than 100 (and
+	// ignoring the effect of TargetBytesPerBatchReq, for now), so we can
+	// typically expect a point intent resolution batch to do all its work in
+	// one request-response (BatchRequest-BatchResponse) pair, while a ranged
+	// intent resolution batch may paginate into multiple request-response
+	// pairs, each of which are 2x larger in the amount of work done.
+	//
+	// The above could be used to justify different behavior in enforcing
+	// MaxTimeout -- for ranged intent resolution we could apply it to each
+	// request-response pair, while for point intent resolution since we've
+	// bounded the work up front, we could apply it to the whole batch
+	// processing. But when point intent resolution happens in a single
+	// request-response pair, the two choices are equivalent. We may also have
+	// under-estimated the work needed for a point intent resolution batch,
+	// which is why we have another constraint, intentResolverRequestTargetBytes
+	// (4MB), that constrains the work that can be done before a response. So
+	// we've chosen (for now) to do the simple thing and apply MaxTimeout to
+	// each request-response pair in all cases. NB: this is a change in behavior
+	// from
+	// https://github.com/cockroachdb/cockroach/commit/71f8575f2dc0d020c850b3a0fa1047c492b5f508
+	// which applied the timeout to processing of a whole batch of ranged intent
+	// resolution , which meant transactions with massive numbers of intents
+	// could exceed the deadline of intent resolution, leaving behind intents to
+	// be discovered by later transactions/backups/... (see
+	// https://github.com/cockroachdb/cockroach/issues/97108#issuecomment-1674127105).
 	MaxTimeout time.Duration
 
 	// InFlightBackpressureLimit is the number of batches in flight above which
@@ -294,19 +334,20 @@ func (b *RequestBatcher) sendBatch(ctx context.Context, ba *batch) {
 			}
 			return nil
 		}
-		var deadline time.Time
-		if b.cfg.MaxTimeout > 0 {
-			deadline = timeutil.Now().Add(b.cfg.MaxTimeout)
-		}
-		if !ba.sendDeadline.IsZero() {
-			if deadline.IsZero() || ba.sendDeadline.Before(deadline) {
-				deadline = ba.sendDeadline
-			}
-		}
-		if !deadline.IsZero() {
+		if b.cfg.MaxTimeout > 0 || !ba.latestRequestDeadline.IsZero() {
 			actualSend := send
-			send = func(context.Context) error {
-				return timeutil.RunWithTimeout(ctx, b.sendBatchOpName, timeutil.Until(deadline), actualSend)
+			send = func(ctx context.Context) error {
+				var timeout time.Duration
+				if b.cfg.MaxTimeout > 0 {
+					timeout = b.cfg.MaxTimeout
+				}
+				if !ba.latestRequestDeadline.IsZero() {
+					reqTimeout := timeutil.Until(ba.latestRequestDeadline)
+					if timeout == 0 || reqTimeout < timeout {
+						timeout = reqTimeout
+					}
+				}
+				return timeutil.RunWithTimeout(ctx, b.sendBatchOpName, timeout, actualSend)
 			}
 		}
 		// Send requests in a loop to support pagination, which may be necessary
@@ -383,11 +424,11 @@ func addRequestToBatch(cfg *Config, now time.Time, ba *batch, r *request) (shoul
 	// If this is the first request or
 	if len(ba.reqs) == 0 ||
 		// there are already requests and there is a deadline and
-		(len(ba.reqs) > 0 && !ba.sendDeadline.IsZero() &&
+		(len(ba.reqs) > 0 && !ba.latestRequestDeadline.IsZero() &&
 			// this request either doesn't have a deadline or has a later deadline,
-			(!rHasDeadline || rDeadline.After(ba.sendDeadline))) {
+			(!rHasDeadline || rDeadline.After(ba.latestRequestDeadline))) {
 		// set the deadline to this request's deadline.
-		ba.sendDeadline = rDeadline
+		ba.latestRequestDeadline = rDeadline
 	}
 
 	ba.reqs = append(ba.reqs, r)
@@ -525,9 +566,10 @@ type batch struct {
 	reqs []*request
 	size int // bytes
 
-	// sendDeadline is the latest deadline reported by a request's context.
-	// It will be zero valued if any request does not contain a deadline.
-	sendDeadline time.Time
+	// latestRequestDeadline is the latest deadline reported by a request's
+	// context. It will be zero valued if any request does not contain a
+	// deadline.
+	latestRequestDeadline time.Time
 
 	// idx is the batch's index in the batchQueue.
 	idx int
