@@ -1563,6 +1563,10 @@ func (txn *Txn) AdmissionHeader() kvpb.AdmissionHeader {
 		// the transaction throughput by 10+%. In that experiment 40% of the
 		// BatchRequests evaluated by KV had been assigned high priority due to
 		// locking.
+		//
+		// TODO: Can't do +1 since metrics rely on only the enum values being
+		// used. Can create a const map of locking increase. May need to define
+		// some additional levels.
 		if h.Priority < int32(admissionpb.LockingPri) {
 			h.Priority = int32(admissionpb.LockingPri)
 		}

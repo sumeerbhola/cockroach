@@ -740,6 +740,7 @@ func (mgcq *mvccGCQueue) process(
 			storeID:             mgcq.store.StoreID(),
 		},
 		func(ctx context.Context, intents []roachpb.Intent) error {
+			// TODO: construct a RequesterForAdmissionInfo.
 			intentCount, err := repl.store.intentResolver.
 				CleanupIntents(ctx, intents, gcTimestamp, kvpb.PUSH_TOUCH)
 			if err == nil {

@@ -495,6 +495,16 @@ message Transaction {
   repeated storage.enginepb.IgnoredSeqNumRange ignored_seqnums = 18
     [(gogoproto.nullable) = false, (gogoproto.customname) = "IgnoredSeqNums"];
 
+  // Move these to TxnMeta!
+  // Admission control needs the tuple (TenantID, Priority, CreateTime).
+  // CreateTime is when the txn started, and is TxnMeta.MinTimestamp.
+  sint32 admission_priority = 19;
+
+  // TODO: no tenantID for now! For now can pick it up from the key space. If
+  // we need ac tenantid to diverge from real tenants in the future, can have
+  // a workloadid associated with each txn.
+  TenantID tenant_id = 20;
+
   reserved 3, 6, 9, 13, 14;
 }
 

@@ -503,6 +503,7 @@ func (m *managerImpl) HandleWriterIntentError(
 	// If the discovery process collected a set of intents to resolve before the
 	// next evaluation attempt, do so.
 	if toResolve := g.ltg.ResolveBeforeScanning(); len(toResolve) > 0 {
+		// TODO: construct a RequesterInfoForAdmission since have a requester here.
 		if err := m.ltw.ResolveDeferredIntents(ctx, toResolve); err != nil {
 			m.FinishReq(g)
 			return nil, err

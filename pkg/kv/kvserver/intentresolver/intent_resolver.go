@@ -25,7 +25,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
@@ -130,6 +132,8 @@ type Config struct {
 	MaxGCBatchIdle               time.Duration
 	MaxIntentResolutionBatchWait time.Duration
 	MaxIntentResolutionBatchIdle time.Duration
+
+	Settings *cluster.Settings
 }
 
 // RangeCache is a simplified interface to the rngcache.RangeCache.
@@ -482,9 +486,15 @@ func (ir *IntentResolver) runAsyncTask(
 // encountered during another command but did not interfere with the
 // execution of that command. This occurs during inconsistent
 // reads.
+// TODO: This occurs during inconsistent reads is stale, since is
+// being called for consistent reads, and for writes.
+//
 // TODO(nvanbenschoten): is this needed if the intents could not have
 // expired yet (i.e. they are not at least 5s old)? Should we filter
 // those out? If we don't, will this be too expensive for SKIP LOCKED?
+//
+// TODO: this seems like the encounteredNonInterfering case. May not need
+// a RequesterInfoForAdmission parameter.
 func (ir *IntentResolver) CleanupIntentsAsync(
 	ctx context.Context, intents []roachpb.Intent, allowSyncProcessing bool,
 ) error {
@@ -510,6 +520,8 @@ func (ir *IntentResolver) CleanupIntentsAsync(
 // On success, returns the number of resolved intents. On error, a
 // subset of the intents may have been resolved, but zero will be
 // returned.
+//
+// TODO: take a RequesterInfoForAdmission parameter.
 func (ir *IntentResolver) CleanupIntents(
 	ctx context.Context, intents []roachpb.Intent, now hlc.Timestamp, pushType kvpb.PushTxnType,
 ) (int, error) {
@@ -588,6 +600,10 @@ func (ir *IntentResolver) CleanupIntents(
 // coordinator: if it had STAGED the txn, it won't be able to tell the
 // difference between a txn that had been implicitly committed, recovered, and
 // GC'ed, and one that someone else aborted and GC'ed.
+//
+// TODO: this is the transaction commit resolving its intents that did not
+// synchronously resolve with the commit (on different ranges than the txn
+// record. We have the Transaction object in EndTxnIntents.
 func (ir *IntentResolver) CleanupTxnIntentsAsync(
 	ctx context.Context,
 	rangeID roachpb.RangeID,
@@ -650,6 +666,9 @@ func (ir *IntentResolver) lockInFlightTxnCleanup(
 // is pushed first to abort it. onComplete is called if non-nil upon completion
 // of async task with the intention that it be used as a hook to update metrics.
 // It will not be called if an error is returned.
+//
+// TODO: this is happening due to MVCC GC. These intents are in the way but we should
+// resolve them with whatever we consider the priority of GC to be.
 func (ir *IntentResolver) CleanupTxnIntentsOnGCAsync(
 	ctx context.Context,
 	rangeID roachpb.RangeID,
@@ -936,6 +955,11 @@ func (s *sliceLockUpdates) Index(i int) roachpb.LockUpdate {
 // ResolveIntent synchronously resolves an intent according to opts. The method
 // is expected to be run on behalf of a user request, as opposed to a background
 // task.
+// TODO: this is called from a lock table waiter. Should take a RequesterInfoForAdmission
+// parameter. Consider not subjecting this to AC since this is a single intent
+// being resolved by a request that is already subject to AC. Also, this is the
+// only case that is setting sendImmediately to true and avoiding using the
+// RequestBatcher.
 func (ir *IntentResolver) ResolveIntent(
 	ctx context.Context, intent roachpb.LockUpdate, opts ResolveOptions,
 ) *kvpb.Error {
@@ -970,6 +994,9 @@ func (ir *IntentResolver) ResolveIntents(
 // intents can be either sliceLockUpdates or txnLockUpdates. In the
 // latter case, transaction LockSpans will be lazily translated to
 // LockUpdates as they are accessed in this method.
+//
+// TODO: this is the final place that everyone calls into. This should have
+// one requester, so can add RequesterInfoForAdmission parameter.
 func (ir *IntentResolver) resolveIntents(
 	ctx context.Context, intents lockUpdates, opts ResolveOptions,
 ) (pErr *kvpb.Error) {
@@ -1090,4 +1117,59 @@ func (s intentsByTxn) Len() int      { return len(s) }
 func (s intentsByTxn) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 func (s intentsByTxn) Less(i, j int) bool {
 	return bytes.Compare(s[i].Txn.ID[:], s[j].Txn.ID[:]) < 0
+}
+
+/*
+- Txn commits
+- Intent is in the way
+- Intent is found but not in the way
+- Make an intent resolution context
+- Use that context to decide what to do in intent resolver in terms of AC header.
+- Batcher uses that to accumulate many contexts ...
+- Subject to AC
+*/
+
+type requesterKind int32
+
+// Expand these callers so that know exact non-txn requester, so settings
+// can be used to alter behavior.
+const (
+	txnCommit requesterKind = iota
+	encounteredNonInterfering
+	// TODO: can still have priority inversion since distinguished waiter
+	// may be a lower priority txn from an AC perspective.
+	// What is the right way for users to isolate different workloads sharing
+	// the same kv layer? Don't expect different priorities to work for same key spans.
+	// If doing lower priority writes on a keyspan, finish them all before doing higher
+	// priority work.
+	// By that same logic, when have a txn with intent waiting, don't increase it to
+	// high priority. Just increment it by 1, unless increment results in overflow.
+	// Can:
+	// - mix lower priority (non-locking) read txns and higher priority writes/reads txns.
+	// -
+	//
+	// - User inter-tenant isolation with different shares.
+	encounteredInterferingOtherTxn
+	encounteredInterferingNonTxn
+	encounteredIntentsInterferingGC
+	encounteredIntentsInterferingRangeFeed
+)
+
+type RequesterInfoForAdmission struct {
+	requesterKind
+	// TODO: only populate the following for txnCommit, or other
+	// txn is waiting.
+	// For other sources the createTime is now when it hits the IntentResolver.
+	createTime int64
+	priority   admissionpb.WorkPriority
+	// TODO(sumeer): figure out TenantID. We may have the TenantID in the
+	// context.Context of the caller, so we could extract it into this struct.
+	// But I don't think we currently have a way of injecting it into the RPC
+	// sent for intent resolution, since all the tenant injection happens in
+	// rpc.kvAuth, and in our case the RPC will be sent from one storage server
+	// to another.
+}
+
+func MakeRequesterInfoForTxnCommit(txn *roachpb.Transaction) RequesterInfoForAdmission {
+	return
 }

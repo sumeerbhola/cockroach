@@ -339,6 +339,7 @@ func (w *lockTableWaiterImpl) WaitOn(
 				// the comment in lockTableImpl.tryActiveWait for the proper way to
 				// remove this and other evaluation races.
 				toResolve := guard.ResolveBeforeScanning()
+				// TODO: construct a RequesterInfoForAdmission since have a requester here.
 				return w.ResolveDeferredIntents(ctx, toResolve)
 
 			default:
@@ -652,6 +653,8 @@ func (w *lockTableWaiterImpl) pushLockTxn(
 	}
 	logResolveIntent(ctx, resolve)
 	opts := intentresolver.ResolveOptions{Poison: true}
+	// TODO: request.Txn may be non-nil, in which case we should construct
+	// RequesterInfoForAdmission here.
 	return w.ir.ResolveIntent(ctx, resolve, opts)
 }
 
@@ -831,6 +834,8 @@ func (w *lockTableWaiterImpl) timeUntilDeadline(deadline time.Time) time.Duratio
 }
 
 // ResolveDeferredIntents implements the lockTableWaiter interface.
+//
+// TODO: Take a RequesterInfoForAdmission parameter.
 func (w *lockTableWaiterImpl) ResolveDeferredIntents(
 	ctx context.Context, deferredResolution []roachpb.LockUpdate,
 ) *Error {
