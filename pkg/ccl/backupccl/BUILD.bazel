@@ -272,6 +272,7 @@ go_test(
         "//pkg/util/ctxgroup",
         "//pkg/util/encoding",
         "//pkg/util/hlc",
+        "//pkg/util/humanizeutil",
         "//pkg/util/ioctx",
         "//pkg/util/leaktest",
         "//pkg/util/limit",
