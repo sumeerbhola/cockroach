@@ -606,11 +606,12 @@ func TestFileRegistryRollover(t *testing.T) {
 // TestFileRegistryKeepOldFilesAndSync tests that the file registry keeps
 // older registry files as configured, and correctly syncs writes to disk.
 func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
+	// defer leaktest.AfterTest(t)()
+	// defer log.Scope(t).Close(t)
 
 	skip.UnderRace(t) // Slow under race.
 
+	t.Logf("starting ha")
 	const dir = "/mydb"
 	mem := vfs.NewStrictMem()
 	{
@@ -626,7 +627,8 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 	var numOldRegistryFiles = 3
 	registry := &PebbleFileRegistry{FS: mem, DBDir: dir, NumOldRegistryFiles: numOldRegistryFiles}
 	require.NoError(t, registry.Load(context.Background()))
-
+	t.Logf("after load")
+	
 	// All the registry files created so far. Some may have been subsequently
 	// deleted.
 	var registryFiles []string
@@ -670,33 +672,48 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 	}
 	registryChecker := makeFileRegistryEntryChecker(t, mem, dir)
 	totalCreated := 0
+	i := 0
 	for {
+		t.Logf("starting loop iteration %d", i)
 		created := accumRegistryFiles(false)
 		if created != totalCreated {
 			registryChecker.checkEntries(registry)
 		}
+		t.Logf("num created %d", created)
 		totalCreated = created
 		// Go over the threshold of old registry files to keep, so we exercise
 		// cleanup logic a few times.
 		if totalCreated > numOldRegistryFiles+3 {
+			t.Logf("breaking out of loop")		
 			break
 		}
+		t.Logf("calling addEntry %d", i)
+		i++
 		registryChecker.addEntry(registry)
+		t.Logf("done calling addEntry")
 	}
 	// Start ignoring syncs.
+	t.Logf("calling SetIgnoreSyncs(true)")
 	mem.SetIgnoreSyncs(true)
 	// Add another entry, that will be deliberately lost.
+	t.Logf("adding another entry, to be lost")
 	registryChecker.addEntry(registry)
+	t.Logf("done adding another entry")
 	registryChecker.checkEntries(registry)
+	t.Logf("done checkEntries")
 	require.NoError(t, registry.Close())
+	t.Logf("done registry.Close")
 	mem.ResetToSyncedState()
+	t.Logf("done ResetToSyncedState")
 	// Remove the lost entry from what we check.
 	registryChecker.numAddedEntries--
 
+	t.Logf("calling SetIgnoreSyncs(false)")
 	mem.SetIgnoreSyncs(false)
 	// Keep no old registry files.
 	numOldRegistryFiles = 0
 	registry = &PebbleFileRegistry{FS: mem, DBDir: dir, NumOldRegistryFiles: numOldRegistryFiles}
+	t.Logf("calling Load")
 	require.NoError(t, registry.Load(context.Background()))
 	// Force check that the old registry files are gone.
 	accumRegistryFiles(true)
@@ -704,6 +721,7 @@ func TestFileRegistryKeepOldFilesAndSync(t *testing.T) {
 	registryChecker.checkEntries(registry)
 	require.NoError(t, registry.Close())
 
+	t.Logf("ha5")
 	// Another load, with a different NumOldRegistryFiles, just for fun.
 	numOldRegistryFiles = 1
 	registry = &PebbleFileRegistry{FS: mem, DBDir: dir, NumOldRegistryFiles: numOldRegistryFiles}

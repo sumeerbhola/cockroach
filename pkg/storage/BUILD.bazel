@@ -141,7 +141,6 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":storage"],
     shard_count = 2,
-    tags = ["no-remote-exec"],
     deps = [
         "//pkg/base",
         "//pkg/clusterversion",

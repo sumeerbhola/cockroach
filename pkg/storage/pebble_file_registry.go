@@ -133,6 +133,7 @@ func (r *PebbleFileRegistry) Load(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	log.Infof(ctx, "PebbleFileRegistry.Load")
 	// Initialize private fields needed when the file registry will be used.
 	r.mu.entries = make(map[string]*enginepb.FileEntry)
 
@@ -443,6 +444,8 @@ func (r *PebbleFileRegistry) processBatchLocked(batch *enginepb.RegistryUpdateBa
 		return nil
 	}
 	if err := r.writeToRegistryFile(batch); err != nil {
+	       	log.Errorf(context.Background(), "panicking: %s", err.Error())
+		fmt.Printf("panicking: %s\n", err.Error())
 		panic(err)
 	}
 	r.applyBatch(batch)
@@ -475,29 +478,40 @@ func (r *PebbleFileRegistry) writeToRegistryFile(batch *enginepb.RegistryUpdateB
 		// change if the total number of entries is large enough to exceed
 		// maxRegistrySize. Do something similar to what we do with the Pebble
 		// MANIFEST rollover.
+		log.Infof(context.Background(), "calling createNewRegistryFile")
 		if err := r.createNewRegistryFile(); err != nil {
-			if nilWriter {
+			log.Infof(context.Background(), "createNewRegistryFile: err=%s", err.Error())
+		       	if nilWriter {
 				return errors.Wrap(err, "creating new registry file")
 			} else {
 				return errors.Wrap(err, "rotating registry file")
 			}
 		}
+		log.Infof(context.Background(), "done createNewRegistryFile")
 	}
 	w, err := r.mu.registryWriter.Next()
 	if err != nil {
+		log.Infof(context.Background(), "Next: err=%s", err.Error())
 		return err
 	}
 	b, err := protoutil.Marshal(batch)
 	if err != nil {
+		log.Infof(context.Background(), "Marshal: err=%s", err.Error())
 		return err
 	}
 	if _, err := w.Write(b); err != nil {
+		log.Infof(context.Background(), "Write: err=%s", err.Error())
 		return err
 	}
 	if err := r.mu.registryWriter.Flush(); err != nil {
+		log.Infof(context.Background(), "Flush: err=%s", err.Error())
 		return err
 	}
-	return r.mu.registryFile.Sync()
+	if err := r.mu.registryFile.Sync(); err != nil {
+		log.Infof(context.Background(), "Sync: err=%s", err.Error())
+		return err
+	}
+	return nil
 }
 
 func makeRegistryFilename(iter uint64) string {
