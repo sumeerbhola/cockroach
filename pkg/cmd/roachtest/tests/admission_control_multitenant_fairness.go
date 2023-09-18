@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/grafana"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
@@ -48,8 +49,9 @@ func registerMultiTenantFairness(r registry.Registry) {
 	specs := []multiTenantFairnessSpec{
 		{
 			name:        "read-heavy/even",
+			numTenants:  4,
 			concurrency: func(int) int { return 250 },
-			blockSize:   5,
+			blockSize:   func(_ int) int { return 5 },
 			readPercent: 95,
 			duration:    20 * time.Minute,
 			batch:       100,
@@ -58,8 +60,9 @@ func registerMultiTenantFairness(r registry.Registry) {
 		},
 		{
 			name:        "read-heavy/skewed",
+			numTenants:  4,
 			concurrency: func(i int) int { return i * 250 },
-			blockSize:   5,
+			blockSize:   func(_ int) int { return 5 },
 			readPercent: 95,
 			duration:    20 * time.Minute,
 			batch:       100,
@@ -68,8 +71,9 @@ func registerMultiTenantFairness(r registry.Registry) {
 		},
 		{
 			name:        "write-heavy/even",
+			numTenants:  4,
 			concurrency: func(i int) int { return 50 },
-			blockSize:   50_000,
+			blockSize:   func(_ int) int { return 50_000 },
 			readPercent: 5,
 			duration:    20 * time.Minute,
 			batch:       1,
@@ -78,12 +82,29 @@ func registerMultiTenantFairness(r registry.Registry) {
 		},
 		{
 			name:        "write-heavy/skewed",
+			numTenants:  4,
 			concurrency: func(i int) int { return i * 50 },
-			blockSize:   50_000,
+			blockSize:   func(_ int) int { return 50_000 },
 			readPercent: 5,
 			duration:    20 * time.Minute,
 			batch:       1,
 			maxOps:      1000,
+			query:       "UPSERT INTO kv(k, v)",
+		},
+		{
+			name:       "write-only/skewed",
+			numTenants: 2,
+			concurrency: func(i int) int {
+				return (i-1)*500 + 100
+			},
+			maxRate: func(i int) int {
+				return 360 * i
+			},
+			blockSize:   func(i int) int { return i * 65_536 },
+			readPercent: 0,
+			duration:    60 * time.Minute,
+			batch:       1,
+			maxOps:      1,
 			query:       "UPSERT INTO kv(k, v)",
 		},
 	}
@@ -92,7 +113,7 @@ func registerMultiTenantFairness(r registry.Registry) {
 		s := s
 		r.Add(registry.TestSpec{
 			Name:              fmt.Sprintf("admission-control/multitenant-fairness/%s", s.name),
-			Cluster:           r.MakeClusterSpec(5),
+			Cluster:           r.MakeClusterSpec(s.numTenants+2, spec.CPU(8)),
 			Owner:             registry.OwnerAdmissionControl,
 			Benchmark:         true,
 			Leases:            registry.MetamorphicLeases,
@@ -106,13 +127,15 @@ func registerMultiTenantFairness(r registry.Registry) {
 }
 
 type multiTenantFairnessSpec struct {
-	name  string
-	query string // query for which we'll check statistics for
+	name       string
+	numTenants int
+	query      string // query for which we'll check statistics for
 
 	readPercent int           // --read-percent
-	blockSize   int           // --min-block-bytes, --max-block-bytes
+	blockSize   func(int) int // --min-block-bytes, --max-block-bytes
 	duration    time.Duration // --duration
 	concurrency func(int) int // --concurrency
+	maxRate     func(int) int // --max-rate
 	batch       int           // --batch
 	maxOps      int           // --max-ops
 }
@@ -120,11 +143,11 @@ type multiTenantFairnessSpec struct {
 func runMultiTenantFairness(
 	ctx context.Context, t test.Test, c cluster.Cluster, s multiTenantFairnessSpec,
 ) {
-	if c.Spec().NodeCount < 5 {
-		t.Fatalf("expected at least 5 nodes, found %d", c.Spec().NodeCount)
+	if c.Spec().NodeCount < s.numTenants+2 {
+		t.Fatalf("expected at least %d nodes, found %d", s.numTenants+2, c.Spec().NodeCount)
 	}
 
-	numTenants := 4
+	numTenants := s.numTenants
 	crdbNodeID := 1
 	crdbNode := c.Node(crdbNodeID)
 	if c.IsLocal() {
@@ -136,9 +159,13 @@ func runMultiTenantFairness(
 		if s.batch > 10 {
 			s.batch = 10
 		}
-		if s.blockSize > 2 {
-			s.batch = 2
-		}
+		/*
+			if s.blockSize > 2 {
+				s.batch = 2
+			}
+
+		*/
+		s.batch = 2
 	}
 
 	t.L().Printf("starting cockroach securely (<%s)", time.Minute)
@@ -166,7 +193,7 @@ func runMultiTenantFairness(
 		}
 	}
 
-	setRateLimit(ctx, 1_000_000)
+	setRateLimit(ctx, 10_000_000)
 
 	const (
 		tenantBaseID       = 11
@@ -193,7 +220,7 @@ func runMultiTenantFairness(
 		defer db.Close()
 		if _, err := db.ExecContext(
 			ctx, fmt.Sprintf(
-				"SELECT crdb_internal.update_tenant_resource_limits(%[1]d, 1000000000, 10000, 1000000, now(), 0)", tenantID)); err != nil {
+				"SELECT crdb_internal.update_tenant_resource_limits(%[1]d, 1000000000, 100000000, 100000000, now(), 0)", tenantID)); err != nil {
 			t.Fatalf("failed to update tenant resource limits: %v", err)
 		}
 	}
@@ -203,6 +230,15 @@ func runMultiTenantFairness(
 
 	t.L().Printf("enabling child metrics (<%s)", 30*time.Second)
 	_, err := c.Conn(ctx, t.L(), crdbNodeID).Exec(`SET CLUSTER SETTING server.child_metrics.enabled = true`)
+	require.NoError(t, err)
+
+	t.L().Printf("creating craig user")
+	_, err = c.Conn(ctx, t.L(), crdbNodeID).Exec(`CREATE USER craig WITH PASSWORD 'cockroach'`)
+	require.NoError(t, err)
+	_, err = c.Conn(ctx, t.L(), crdbNodeID).Exec(`GRANT admin to craig`)
+	require.NoError(t, err)
+
+	_, err = c.Conn(ctx, t.L(), crdbNodeID).Exec(`SET CLUSTER SETTING kvadmission.flow_control.mode = "apply_to_all"`)
 	require.NoError(t, err)
 
 	// Create the tenants.
@@ -268,10 +304,11 @@ func runMultiTenantFairness(
 			// session gets renewed shortly (within some jitter). We don't want
 			// to --tolerate-errors here and below because we'd see total
 			// throughput collapse.
+			blockSize := s.blockSize(tenantNodeID(i) - 1)
 			cmd := fmt.Sprintf(
 				"./cockroach workload run kv '%s' --secure --min-block-bytes %d --max-block-bytes %d "+
-					"--batch %d --max-ops %d --concurrency=25",
-				pgurl, s.blockSize, s.blockSize, s.batch, s.maxOps)
+					"--batch %d --max-ops %d --concurrency=25 --tolerate-errors",
+				pgurl, blockSize, blockSize, s.batch, s.maxOps)
 			err := c.RunE(ctx, c.Node(tenantNodeID(i)), cmd)
 			t.L().Printf("loaded data for tenant %d", tenantID(i))
 			return err
@@ -290,10 +327,20 @@ func runMultiTenantFairness(
 		i := i
 		pgurl := tenants[i].secureURL()
 		m2.Go(func(ctx context.Context) error {
+			var writeSeqStr string
+			if s.maxOps > 10 {
+				writeSeqStr = fmt.Sprintf("--write-seq=R%d", s.maxOps*s.batch)
+			}
+			var maxRateStr string
+			if s.maxRate != nil {
+				maxRate := s.maxRate(tenantNodeID(i) - 1)
+				maxRateStr = fmt.Sprintf("--max-rate=%d", maxRate)
+			}
+			blockSize := s.blockSize(tenantNodeID(i) - 1)
 			cmd := fmt.Sprintf(
-				"./cockroach workload run kv '%s' --write-seq=%s --secure --min-block-bytes %d "+
+				"./cockroach workload run kv '%s' %s %s --secure --min-block-bytes %d "+
 					"--max-block-bytes %d --batch %d --duration=%s --read-percent=%d --concurrency=%d",
-				pgurl, fmt.Sprintf("R%d", s.maxOps*s.batch), s.blockSize, s.blockSize, s.batch,
+				pgurl, writeSeqStr, maxRateStr, blockSize, blockSize, s.batch,
 				s.duration, s.readPercent, s.concurrency(tenantNodeID(i)-1))
 
 			err := c.RunE(ctx, c.Node(tenantNodeID(i)), cmd)

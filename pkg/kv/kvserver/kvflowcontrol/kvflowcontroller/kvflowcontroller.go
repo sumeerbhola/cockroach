@@ -257,6 +257,7 @@ func (c *Controller) Inspect(ctx context.Context) []kvflowinspectpb.Stream {
 			StoreID:                stream.StoreID,
 			AvailableRegularTokens: int64(b.tokensLocked(regular)),
 			AvailableElasticTokens: int64(b.tokensLocked(elastic)),
+			DeductedRegularTokens:  int64(b.mu.tokensPerWorkClass.regularTokensDeducted),
 		})
 		b.mu.RUnlock()
 		return true
@@ -280,6 +281,7 @@ func (c *Controller) InspectStream(
 		StoreID:                stream.StoreID,
 		AvailableRegularTokens: int64(tokens.regular),
 		AvailableElasticTokens: int64(tokens.elastic),
+		DeductedRegularTokens:  int64(tokens.regularTokensDeducted),
 	}
 }
 
@@ -444,6 +446,9 @@ func (b *bucket) adjust(
 			unaccounted.regular = b.mu.tokensPerWorkClass.regular - limit.regular
 			b.mu.tokensPerWorkClass.regular = limit.regular // enforce ceiling
 		}
+		if delta < 0 {
+			b.mu.tokensPerWorkClass.regularTokensDeducted -= delta
+		}
 
 		b.mu.tokensPerWorkClass.elastic += delta
 		if delta > 0 && b.mu.tokensPerWorkClass.elastic > limit.elastic {
@@ -466,6 +471,8 @@ func (b *bucket) adjust(
 
 type tokensPerWorkClass struct {
 	regular, elastic kvflowcontrol.Tokens
+	// Cumulative value.
+	regularTokensDeducted kvflowcontrol.Tokens
 }
 
 const (
@@ -491,6 +498,7 @@ func (c *Controller) getTokensForStream(stream kvflowcontrol.Stream) tokensPerWo
 	b.mu.RLock()
 	ret.regular = b.tokensLocked(regular)
 	ret.elastic = b.tokensLocked(elastic)
+	ret.regularTokensDeducted = b.mu.tokensPerWorkClass.regularTokensDeducted
 	b.mu.RUnlock()
 	return ret
 }

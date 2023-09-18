@@ -90,6 +90,7 @@ message Stream {
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.StoreID"];
   int64 available_regular_tokens = 3;
   int64 available_elastic_tokens = 4;
+  int64 deducted_regular_tokens = 5;
 }
 
 // TrackedDeductions represents a tracked token deduction, as typically done by
