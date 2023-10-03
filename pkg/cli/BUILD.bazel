@@ -244,6 +244,7 @@ go_library(
         "@com_github_cockroachdb_pebble//vfs",
         "@com_github_cockroachdb_redact//:redact",
         "@com_github_cockroachdb_ttycolor//:ttycolor",
+        "@com_github_codahale_hdrhistogram//:hdrhistogram",
         "@com_github_dustin_go_humanize//:go-humanize",
         "@com_github_fsnotify_fsnotify//:fsnotify",
         "@com_github_gogo_protobuf//jsonpb",

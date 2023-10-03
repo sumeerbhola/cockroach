@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -71,6 +72,7 @@ import (
 	"github.com/cockroachdb/pebble/tool"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/ttycolor"
+	"github.com/codahale/hdrhistogram"
 	humanize "github.com/dustin/go-humanize"
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/kr/pretty"
@@ -95,6 +97,14 @@ Create a ballast file to fill the store directory up to a given amount
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: runDebugBallast,
+}
+
+var debugTimerResolutionCmd = &cobra.Command{
+	Use:   "timer-resolution <sleep|ticker|nanosleep> <duration-nanos> <iters>",
+	Short: "measure timer ticks",
+	Long:  "measure timer ticks",
+	Args:  cobra.ExactArgs(3),
+	RunE:  runTimerResolution,
 }
 
 // PopulateStorageConfigHook is a callback set by CCL code.
@@ -373,6 +383,85 @@ func runDebugKeys(cmd *cobra.Command, args []string) error {
 			storage.IterKeyTypePointsAndRanges, iterFunc); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+type sleepTicker struct {
+	dur time.Duration
+}
+
+func (s *sleepTicker) tick() time.Time {
+	time.Sleep(s.dur)
+	return timeutil.Now()
+}
+
+type timeTicker struct {
+	ticker *time.Ticker
+}
+
+func (t *timeTicker) tick() time.Time {
+	return <-t.ticker.C
+}
+
+type nanoSleepTicker struct {
+	spec syscall.Timespec
+	copy syscall.Timespec
+}
+
+func (n *nanoSleepTicker) tick() time.Time {
+	n.copy = n.spec
+	_ = syscall.Nanosleep(&n.copy, &n.copy)
+	return timeutil.Now()
+}
+
+type ticker interface {
+	tick() time.Time
+}
+
+func runTimerResolution(cmd *cobra.Command, args []string) error {
+	kind := args[0]
+	duration, err := parsePositiveInt(args[1])
+	if err != nil {
+		return err
+	}
+	iters, err := parsePositiveInt(args[2])
+	if err != nil {
+		return err
+	}
+
+	var tckr ticker
+	switch kind {
+	case "sleep":
+		tckr = &sleepTicker{dur: time.Duration(duration)}
+	case "ticker":
+		tckr = &timeTicker{ticker: time.NewTicker(time.Duration(duration))}
+	case "nanosleep":
+		tckr = &nanoSleepTicker{spec: syscall.Timespec{
+			Sec:  0,
+			Nsec: duration,
+		}}
+	}
+	durations := hdrhistogram.New(duration, 1000*duration, 3)
+	startTime := timeutil.Now()
+	var lastTime time.Time
+	for i := 0; i < int(iters); i++ {
+		now := tckr.tick()
+		if i > 0 {
+			dur := now.Sub(lastTime)
+			_ = durations.RecordValue(int64(dur))
+		}
+		lastTime = now
+	}
+	endTime := timeutil.Now()
+	bars := durations.Distribution()
+	fmt.Printf("\nTotal duration: %s, Histogram:\n", endTime.Sub(startTime).String())
+	for i := range bars {
+		if bars[i].Count == 0 {
+			continue
+		}
+		fmt.Printf("[%s,%s): %d\n", time.Duration(bars[i].From).String(),
+			time.Duration(bars[i].To), bars[i].Count)
 	}
 	return nil
 }
@@ -1335,6 +1424,7 @@ var debugCmds = []*cobra.Command{
 	debugRangeDataCmd,
 	debugRangeDescriptorsCmd,
 	debugBallastCmd,
+	debugTimerResolutionCmd,
 	debugCheckLogConfigCmd,
 	debugDecodeKeyCmd,
 	debugDecodeValueCmd,

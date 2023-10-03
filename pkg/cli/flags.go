@@ -929,6 +929,9 @@ func init() {
 		cliflagcfg.VarFlag(f, &debugCtx.ballastSize, cliflags.Size)
 	}
 	{
+		_ = debugTimerResolutionCmd.Flags()
+	}
+	{
 		// TODO(ayang): clean up so dir isn't passed to both pebble and --store
 		f := DebugPebbleCmd.PersistentFlags()
 		cliflagcfg.VarFlag(f, &storeSpecs, cliflags.Store)
