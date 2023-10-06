@@ -826,16 +826,16 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 // SQLStatementRootStartWork. Note, there is no support for SQLStatementLeafStartWork,
 // SQLStatementRootStartWork in the code yet.
 func (q *WorkQueue) AdmittedWorkDone(tenantID roachpb.TenantID, cpuTime time.Duration) {
-	if q.usesTokens {
-		panic(errors.AssertionFailedf("tokens should not be returned"))
-	}
+	// if q.usesTokens {
+	// panic(errors.AssertionFailedf("tokens should not be returned"))
+	//}
 	// Single slot is allocated for the work in the granter, and tenant.used was
 	// incremented by 1.
 	additionalUsed := cpuTime - 1
 	if additionalUsed != 0 {
 		q.adjustTenantUsed(tenantID, additionalUsed.Nanoseconds())
 	}
-	q.granter.returnGrant(1)
+	// q.granter.returnGrant(1)
 }
 
 func (q *WorkQueue) hasWaitingRequests() bool {

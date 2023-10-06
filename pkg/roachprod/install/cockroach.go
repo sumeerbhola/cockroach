@@ -1002,7 +1002,8 @@ func (c *SyncedCluster) generateKeyCmd(
 }
 
 func (c *SyncedCluster) useStartSingleNode() bool {
-	return len(c.VMs) == 1
+	// return len(c.VMs) == 1
+	return true
 }
 
 // distributeCerts distributes certs if it's a secure cluster and we're

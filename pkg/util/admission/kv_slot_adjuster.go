@@ -11,6 +11,7 @@
 package admission
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -122,4 +123,91 @@ func (kvsa *kvSlotAdjuster) CPULoad(runnable int, procs int, samplePeriod time.D
 
 func (kvsa *kvSlotAdjuster) isOverloaded() bool {
 	return kvsa.granter.usedSlots >= kvsa.granter.totalSlots && !kvsa.granter.skipSlotEnforcement
+}
+
+// The default settings here get us 86% cpu utilization on a single node
+// cluster running kv95. kv95 has tiny batches, so this is probably close to a
+// worst case. The tick callbacks were running at 33 KHz, so a bit slower than
+// the configured 50 KHz. 1.77% of the 8 cpu machine in in goschedstats. 0.83%
+// in nanosleep. tryGrantLocked is 0.78%.
+var cpuTokenAdjusterRunnableGoal = settings.RegisterIntSetting(
+	settings.SystemOnly,
+	"admission.cpu_token_adjuster.runnable_goal",
+	"",
+	2, settings.PositiveInt)
+
+// 20 worked better than 10 in flattening the spikes in
+// admission.granter.cpu_token_adjuster.explained_idle. CPU utilization did
+// not increase with 20, and neither did the 99th percentile goroutine
+// scheduling time.
+var cpuTokenAdjusterIdleMultiplier = settings.RegisterIntSetting(
+	settings.SystemOnly,
+	"admission.cpu_token_adjuster.idle_multiplier",
+	"",
+	20, settings.PositiveInt)
+
+type cpuTokenAdjuster struct {
+	settings       *cluster.Settings
+	granter        *tokenGranter
+	lastLoadTime   time.Time
+	counter        uint64
+	runnableGoal   int
+	idleMultiplier int
+	metrics        struct {
+		calls                 *metric.Counter
+		idleDuration          *metric.Counter
+		explainedIdleDuration *metric.Counter
+	}
+}
+
+func newCPUTokenAdjuster(
+	st *cluster.Settings, granter *tokenGranter,
+	calls, idleDuration, explainedIdleDuration *metric.Counter) *cpuTokenAdjuster {
+	cta := &cpuTokenAdjuster{
+		settings:     st,
+		granter:      granter,
+		lastLoadTime: timeutil.Now(),
+		counter:      0,
+	}
+	cta.updateParams()
+	cta.metrics.calls = calls
+	cta.metrics.idleDuration = idleDuration
+	cta.metrics.explainedIdleDuration = explainedIdleDuration
+	return cta
+}
+
+func (cta *cpuTokenAdjuster) CPULoad(numRunnable int, numProcs int, numIdleProcs int) {
+	now := timeutil.Now()
+	elapsed := now.Sub(cta.lastLoadTime)
+	cta.lastLoadTime = now
+
+	if cta.counter%5000 == 0 {
+		cta.updateParams()
+	}
+	cta.counter++
+
+	toAdmit := cta.runnableGoal*numProcs - numRunnable
+	if toAdmit < 0 {
+		toAdmit = 0
+	}
+	// Idleness that is our fault.
+	// Say 3 runnable and 5 idle procs. Then there should only be 5-3 = 2 idle procs.
+	explainedIdleProcs := numIdleProcs - numRunnable
+	if explainedIdleProcs < 0 {
+		explainedIdleProcs = 0
+	}
+	toAdmit += explainedIdleProcs * cta.idleMultiplier
+	cta.granter.setTokens(int64(toAdmit))
+
+	// Worst-case idle duration
+	idleDuration := elapsed * time.Duration(numIdleProcs)
+	explainedIdleDuration := elapsed * time.Duration(explainedIdleProcs)
+	cta.metrics.calls.Inc(1)
+	cta.metrics.idleDuration.Inc(int64(idleDuration))
+	cta.metrics.explainedIdleDuration.Inc(int64(explainedIdleDuration))
+}
+
+func (cta *cpuTokenAdjuster) updateParams() {
+	cta.runnableGoal = int(cpuTokenAdjusterRunnableGoal.Get(&cta.settings.SV))
+	cta.idleMultiplier = int(cpuTokenAdjusterIdleMultiplier.Get(&cta.settings.SV))
 }

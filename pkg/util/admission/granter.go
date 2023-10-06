@@ -152,7 +152,9 @@ func (sg *slotGranter) tryGrantLocked(grantChainID grantChainID) grantResult {
 }
 
 //gcassert:inline
-func (sg *slotGranter) setTotalSlotsLocked(totalSlots int) {
+func (sg *slotGranter) setTotalSlotsLocked(_ int) {
+	// Hack. No one is using slots, but ...
+	totalSlots := 10_000
 	// Mid-stack inlining.
 	if totalSlots == sg.totalSlots {
 		return
@@ -191,6 +193,8 @@ type tokenGranter struct {
 	// is what should be tasked with preventing OOMs, and we want to finish
 	// processing this lower-level work.
 	cpuOverload cpuOverloadIndicator
+
+	// TODO: add an optional metric.
 }
 
 var _ granterWithLockedCalls = &tokenGranter{}
@@ -199,6 +203,11 @@ var _ granter = &tokenGranter{}
 func (tg *tokenGranter) refillBurstTokens(skipTokenEnforcement bool) {
 	tg.availableBurstTokens = tg.maxBurstTokens
 	tg.skipTokenEnforcement = skipTokenEnforcement
+}
+
+func (tg *tokenGranter) setTokens(tokens int64) {
+	tg.skipTokenEnforcement = false
+	tg.availableBurstTokens = tokens
 }
 
 // grantKind implements granter.
@@ -731,6 +740,24 @@ var (
 		Name:        "admission.granter.slot_adjuster_decrements.kv",
 		Help:        "Number of decrements of the total KV slots",
 		Measurement: "Slots",
+		Unit:        metric.Unit_COUNT,
+	}
+	cpuTokenAdjusterCalls = metric.Metadata{
+		Name:        "admission.granter.cpu_token_adjuster.calls",
+		Help:        "TODO",
+		Measurement: "Calls",
+		Unit:        metric.Unit_COUNT,
+	}
+	cpuTokenAdjusterIdleDuration = metric.Metadata{
+		Name:        "admission.granter.cpu_token_adjuster.idle",
+		Help:        "TODO",
+		Measurement: "Nanoseconds",
+		Unit:        metric.Unit_COUNT,
+	}
+	cpuTokenAdjusterExplainedIdleDuration = metric.Metadata{
+		Name:        "admission.granter.cpu_token_adjuster.explained_idle",
+		Help:        "TODO",
+		Measurement: "Nanoseconds",
 		Unit:        metric.Unit_COUNT,
 	}
 	kvIOTokensExhaustedDuration = metric.Metadata{

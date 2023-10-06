@@ -124,6 +124,8 @@ type schedt struct {
 	// The rest of the fields aren't important.
 }
 
+const _Pidle = 0
+
 //go:linkname allp runtime.allp
 var allp []*p
 
@@ -136,7 +138,7 @@ func lock(l *mutex)
 //go:linkname unlock runtime.unlock
 func unlock(l *mutex)
 
-func numRunnableGoroutines() (numRunnable int, numProcs int) {
+func numRunnableGoroutines() (numRunnable int, numProcs int, numIdleProcs int) {
 	lock(&sched.lock)
 	numRunnable = int(sched.runqsize)
 	numProcs = len(allp)
@@ -158,9 +160,12 @@ func numRunnableGoroutines() (numRunnable int, numProcs int) {
 				runnable++
 			}
 			numRunnable += int(runnable)
+			if atomic.LoadUint32(&p.status) == _Pidle {
+				numIdleProcs++
+			}
 			break
 		}
 	}
 	unlock(&sched.lock)
-	return numRunnable, numProcs
+	return numRunnable, numProcs, numIdleProcs
 }

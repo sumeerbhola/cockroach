@@ -591,6 +591,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		goschedstats.UnregisterRunnableCountCallback(cbID)
 	}))
 	stopper.AddCloser(gcoords)
+	goschedstats.StartHighFrequencyCallbacks(20*time.Microsecond, gcoords.Regular.HighFrequencyCallback)
 
 	var admissionControl struct {
 		schedulerLatencyListener admission.SchedulerLatencyListener
@@ -606,7 +607,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 	admissionControl.storesFlowControl = storesForFlowControl
 	admissionControl.kvAdmissionController = kvadmission.MakeController(
 		nodeIDContainer,
-		gcoords.Regular.GetWorkQueue(admission.KVWork),
+		gcoords.Regular.GetWorkQueue(admission.SQLKVResponseWork),
 		gcoords.Elastic,
 		gcoords.Stores,
 		admissionControl.kvflowController,
@@ -909,7 +910,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 		txnMetrics,
 		stores,
 		cfg.ClusterIDContainer,
-		gcoords.Regular.GetWorkQueue(admission.KVWork),
+		gcoords.Regular.GetWorkQueue(admission.SQLKVResponseWork),
 		gcoords.Elastic,
 		gcoords.Stores,
 		tenantUsage,
@@ -1108,7 +1109,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (serverctl.ServerStartupInterf
 			externalStorage:          externalStorage,
 			externalStorageFromURI:   externalStorageFromURI,
 			isMeta1Leaseholder:       node.stores.IsMeta1Leaseholder,
-			sqlSQLResponseAdmissionQ: gcoords.Regular.GetWorkQueue(admission.SQLSQLResponseWork),
+			sqlSQLResponseAdmissionQ: gcoords.Regular.GetWorkQueue(admission.SQLKVResponseWork),
 			spanConfigKVAccessor:     spanConfig.kvAccessorForTenantRecords,
 			kvStoresIterator:         kvserver.MakeStoresIterator(node.stores),
 			inspectzServer:           inspectzServer,

@@ -12,6 +12,7 @@ package goschedstats
 
 import (
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -188,7 +189,7 @@ type timeTickerInterface interface {
 type schedStatsTicker struct {
 	lastTime              time.Time
 	curPeriod             time.Duration
-	numRunnableGoroutines func() (numRunnable int, numProcs int)
+	numRunnableGoroutines func() (numRunnable int, numProcs int, numIdleProcs int)
 	// sum accumulates the sum of the number of runnable goroutines per CPU,
 	// multiplied by toFixedPoint, for all samples since the last reporting.
 	sum uint64
@@ -238,7 +239,7 @@ func (s *schedStatsTicker) getStatsOnTick(
 		s.sum = 0
 		s.numSamples = 0
 	}
-	runnable, numProcs := s.numRunnableGoroutines()
+	runnable, numProcs, _ := s.numRunnableGoroutines()
 	for i := range cbs {
 		cbs[i].RunnableCountCallback(runnable, numProcs, s.curPeriod)
 	}
@@ -246,6 +247,39 @@ func (s *schedStatsTicker) getStatsOnTick(
 	// for fixed-point arithmetic).
 	s.sum += uint64(runnable) * toFixedPoint / uint64(numProcs)
 	s.numSamples++
+}
+
+type HighFrequencyCallback func(numRunnable int, numProcs int, numIdleProcs int)
+
+type highFrequencySchedStatsTicker struct {
+	spec                  syscall.Timespec
+	cb                    HighFrequencyCallback
+	numRunnableGoroutines func() (numRunnable int, numProcs int, numIdleProcs int)
+}
+
+func (h *highFrequencySchedStatsTicker) start() {
+	for {
+		sleepFor(h.spec)
+		h.cb(h.numRunnableGoroutines())
+	}
+}
+
+func CanDoHighFrequencyCallbacks() bool {
+	return canNanoSleep()
+}
+
+func StartHighFrequencyCallbacks(dur time.Duration, cb HighFrequencyCallback) {
+	if !canNanoSleep() {
+		panic("cannot do nanosleep")
+	}
+	ticker := highFrequencySchedStatsTicker{
+		spec:                  syscall.Timespec{Nsec: int64(dur)},
+		cb:                    cb,
+		numRunnableGoroutines: numRunnableGoroutines,
+	}
+	go func() {
+		ticker.start()
+	}()
 }
 
 var _ = RecentNormalizedRunnableGoroutines

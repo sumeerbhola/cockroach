@@ -35,9 +35,40 @@ func TestNumRunnableGoroutines(t *testing.T) {
 	// When we run, we expect at most GOMAXPROCS-1 of the n goroutines to be
 	// running, with the rest waiting.
 	expected := n - runtime.GOMAXPROCS(0) + 1
+	/*
+		There can be a lag in transitioning P's to non-idle. For example on my macbook:
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 393, procs: 10, idle: 2
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+		runnable: 391, procs: 10, idle: 0
+	*/
 	testutils.SucceedsSoon(t, func() error {
-		if n, _ := numRunnableGoroutines(); n < expected {
-			return fmt.Errorf("only %d runnable goroutines, expected %d", n, expected)
+		r, _, idleProcs := numRunnableGoroutines()
+		// fmt.Printf("runnable: %d, procs: %d, idle: %d\n", r, p, idleProcs)
+		if r < expected || idleProcs > 0 {
+			return fmt.Errorf("only %d runnable goroutines, expected %d", r, expected)
 		}
 		return nil
 	})
@@ -55,8 +86,8 @@ func (t *testTimeTicker) Reset(d time.Duration) {
 
 func TestSchedStatsTicker(t *testing.T) {
 	runnable := 0
-	numRunnable := func() (numRunnable int, numProcs int) {
-		return runnable, 1
+	numRunnable := func() (numRunnable int, numProcs int, numIdleProcs int) {
+		return runnable, 1, 0
 	}
 	var callbackSamplePeriod time.Duration
 	var numCallbacks int

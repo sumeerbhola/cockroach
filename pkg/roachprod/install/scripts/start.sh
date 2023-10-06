@@ -55,7 +55,7 @@ if [[ -n "${LOCAL}" || "${1-}" == "run" ]]; then
     mkdir -p "${BAZEL_COVER_DIR}"
   fi
   CODE=0
-  ROACHPROD_VIRTUAL_CLUSTER="${VIRTUAL_CLUSTER_LABEL}" "${BINARY}" "${ARGS[@]}" >> "${LOG_DIR}/cockroach.stdout.log" 2>> "${LOG_DIR}/cockroach.stderr.log" || CODE="$?"
+  ROACHPROD_VIRTUAL_CLUSTER="${VIRTUAL_CLUSTER_LABEL}" sudo -E chrt --rr 99 sudo -E -u ubuntu "${BINARY}" "${ARGS[@]}" >> "${LOG_DIR}/cockroach.stdout.log" 2>> "${LOG_DIR}/cockroach.stderr.log" || CODE="$?"
   if [[ -z "${LOCAL}" || "${CODE}" -ne 0 ]]; then
     echo "cockroach exited with code ${CODE}: $(date)" | tee -a "${LOG_DIR}"/{roachprod,cockroach.{exit,std{out,err}}}.log
   fi
