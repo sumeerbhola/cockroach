@@ -1652,33 +1652,39 @@ func BenchmarkMVCCIncrementalIteratorForOldData(b *testing.B) {
 	for _, valueSize := range []int{100, 500, 1000, 2000} {
 		eng := setupMVCCPebble(b)
 		setupData(b, eng, valueSize)
+		var startKey roachpb.Key
+		var endKey roachpb.Key
 		b.Run(fmt.Sprintf("valueSize=%d", valueSize), func(b *testing.B) {
-			startKey := roachpb.Key(encoding.EncodeUvarintAscending([]byte("key-"), uint64(0)))
-			endKey := roachpb.Key(encoding.EncodeUvarintAscending([]byte("key-"), uint64(numKeys)))
+			startKey = roachpb.Key(encoding.EncodeUvarintAscending([]byte("key-"), uint64(0)))
+			endKey = roachpb.Key(encoding.EncodeUvarintAscending([]byte("key-"), uint64(numKeys)))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				func() {
-					it, err := NewMVCCIncrementalIterator(eng, MVCCIncrementalIterOptions{
-						EndKey:    endKey,
-						StartTime: hlc.Timestamp{},
-						EndTime:   hlc.Timestamp{WallTime: baseTimestamp},
-					})
-					if err != nil {
-						b.Fatal(err)
-					}
-					defer it.Close()
-					it.SeekGE(MVCCKey{Key: startKey})
-					for {
-						if ok, err := it.Valid(); err != nil {
-							b.Fatalf("failed incremental iteration: %+v", err)
-						} else if !ok {
-							break
-						}
-						it.Next()
-					}
-				}()
-			}
+			realBenchFunc(b, eng, startKey, endKey, baseTimestamp)
 		})
 		eng.Close()
+	}
+}
+
+func realBenchFunc(b *testing.B, eng Engine, startKey roachpb.Key, endKey roachpb.Key, baseTimestamp int64) {
+	for i := 0; i < b.N; i++ {
+		func() {
+			it, err := NewMVCCIncrementalIterator(eng, MVCCIncrementalIterOptions{
+				EndKey:    endKey,
+				StartTime: hlc.Timestamp{},
+				EndTime:   hlc.Timestamp{WallTime: baseTimestamp},
+			})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer it.Close()
+			it.SeekGE(MVCCKey{Key: startKey})
+			for {
+				if ok, err := it.Valid(); err != nil {
+					b.Fatalf("failed incremental iteration: %+v", err)
+				} else if !ok {
+					break
+				}
+				it.Next()
+			}
+		}()
 	}
 }
