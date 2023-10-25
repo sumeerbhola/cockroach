@@ -13,6 +13,7 @@ package kvserver_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"strconv"
@@ -31,8 +32,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/server"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -1364,4 +1367,102 @@ func TestNodeLivenessDecommissionAbsent(t *testing.T) {
 	setMembershipStatus(nl1, livenesspb.MembershipStatus_DECOMMISSIONING, true)
 	// Recommission from third node.
 	setMembershipStatus(nl2, livenesspb.MembershipStatus_ACTIVE, true)
+}
+
+func BenchmarkNodeLivenessScanStorage(b *testing.B) {
+	skip.UnderShort(b)
+	defer log.Scope(b).Close(b)
+
+	ctx := context.Background()
+	const numNodes = 100
+	setupEng := func(b *testing.B, numLiveVersions int) storage.Engine {
+		eng := storage.NewDefaultInMemForTesting(storage.DisableAutomaticCompactions)
+		// 20 per minute, so 1000 represents 50 min of liveness writes in a level.
+		const numVersionsPerLevel = 1000
+		const numLevels = 7
+		tsFunc := func(l int, v int) int64 {
+			return int64(l*numVersionsPerLevel + v + 10)
+		}
+		for l := 0; l < numLevels; l++ {
+			for v := 0; v < numVersionsPerLevel; v++ {
+				ts := tsFunc(l, v)
+				for n := roachpb.NodeID(0); n < numNodes; n++ {
+					lKey := keys.NodeLivenessKey(n)
+					if l < numLevels-1 || v < numLiveVersions {
+						liveness := livenesspb.Liveness{
+							NodeID:     n,
+							Epoch:      100,
+							Expiration: hlc.LegacyTimestamp{WallTime: ts},
+							Draining:   false,
+							Membership: livenesspb.MembershipStatus_ACTIVE,
+						}
+
+						require.NoError(b, storage.MVCCPutProto(
+							ctx, eng, nil, lKey, hlc.Timestamp{WallTime: ts},
+							hlc.ClockTimestamp{WallTime: ts}, nil, &liveness))
+					}
+					// Else most recent level and we have already written
+					// numLiveVersions keys.
+
+					if l != 0 {
+						// Clear the key from the next older level.
+						eng.ClearMVCC(storage.MVCCKey{
+							Key:       lKey,
+							Timestamp: hlc.Timestamp{WallTime: tsFunc(l-1, v)},
+						})
+					}
+				}
+				if l == 0 && v < 10 {
+					// Flush to grow the memtable size.
+					require.NoError(b, eng.Flush())
+				}
+			}
+			if l == 0 {
+				// Since did many flushes, compact everything down.
+				require.NoError(b, eng.Compact())
+			} else {
+				// Flush the next level. This will become a L0 sub-level.
+				require.NoError(b, eng.Flush())
+			}
+		}
+		return eng
+	}
+	scanLiveness := func(b *testing.B, eng storage.Engine, expectedCount int) (blockBytes uint64) {
+		ss := &roachpb.ScanStats{}
+		opts := storage.MVCCScanOptions{
+			ScanStats: ss,
+		}
+		scanRes, err := storage.MVCCScan(
+			ctx, eng.NewReadOnly(storage.StandardDurability), keys.NodeLivenessPrefix,
+			keys.NodeLivenessKeyMax, hlc.MaxTimestamp, opts)
+		if err != nil {
+			b.Fatal(err.Error())
+		}
+		if expectedCount != len(scanRes.KVs) {
+			b.Fatalf("expected %d != actual %d", expectedCount, len(scanRes.KVs))
+		}
+		return ss.BlockBytes
+	}
+
+	for _, numLiveVersions := range []int{2, 5, 10, 1000} {
+		b.Run(fmt.Sprintf("num-live=%d", numLiveVersions), func(b *testing.B) {
+			for _, compacted := range []bool{false} {
+				b.Run(fmt.Sprintf("compacted=%t", compacted), func(b *testing.B) {
+					eng := setupEng(b, numLiveVersions)
+					defer eng.Close()
+					if compacted {
+						require.NoError(b, eng.Compact())
+					}
+					// fmt.Printf("num-live=%d,compacted=%t:\n%s\n", numLiveVersions, compacted,
+					//	eng.GetMetrics().Metrics.String())
+					b.ResetTimer()
+					blockBytes := uint64(0)
+					for i := 0; i < b.N; i++ {
+						blockBytes += scanLiveness(b, eng, numNodes)
+					}
+					b.ReportMetric(float64(blockBytes)/float64(b.N), "block-bytes/op")
+				})
+			}
+		})
+	}
 }
