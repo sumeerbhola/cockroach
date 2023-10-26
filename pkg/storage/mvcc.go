@@ -1202,6 +1202,8 @@ type MVCCGetOptions struct {
 	// AllowEmpty will return an empty result if the request key exceeds the
 	// TargetBytes limit.
 	AllowEmpty bool
+
+	BatchOnlyIter bool
 }
 
 // MVCCGetResult bundles return values for the MVCCGet family of functions.
@@ -1356,17 +1358,29 @@ func MVCCGetWithValueHeader(
 		}
 		return result, enginepb.MVCCValueHeader{}, nil
 	}
-	iter, err := newMVCCIterator(
-		ctx, reader, timestamp, false /* rangeKeyMasking */, opts.DontInterleaveIntents,
-		IterOptions{
-			KeyTypes: IterKeyTypePointsAndRanges,
-			Prefix:   true,
-		},
-	)
+	var iter MVCCIterator
+	var err error
+	if opts.BatchOnlyIter {
+		b, ok := reader.(Batch)
+		if !ok {
+			panic("MVCCGetWithValueHeader did not get a storage.Batch")
+		}
+		iter, err = b.NewBatchOnlyMVCCIterator(ctx,
+			IterOptions{KeyTypes: IterKeyTypePointsAndRanges, Prefix: true})
+	} else {
+		iter, err = newMVCCIterator(
+			ctx, reader, timestamp, false /* rangeKeyMasking */, opts.DontInterleaveIntents,
+			IterOptions{
+				KeyTypes: IterKeyTypePointsAndRanges,
+				Prefix:   true,
+			},
+		)
+	}
 	if err != nil {
 		return result, enginepb.MVCCValueHeader{}, err
 	}
 	defer iter.Close()
+
 	value, intent, vh, err := mvccGetWithValueHeader(ctx, iter, key, timestamp, opts)
 	val := value.ToPointer()
 	if err == nil && val != nil {

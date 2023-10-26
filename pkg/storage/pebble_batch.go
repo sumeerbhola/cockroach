@@ -225,6 +225,27 @@ func (p *pebbleBatch) NewMVCCIterator(
 	return maybeWrapInUnsafeIter(iter), nil
 }
 
+func (p *pebbleBatch) NewBatchOnlyMVCCIterator(
+	ctx context.Context, opts IterOptions,
+) (MVCCIterator, error) {
+	if p.writeOnly {
+		panic("write-only batch")
+	}
+	if !p.batch.Indexed() {
+		panic("unindexed batch")
+	}
+	var err error
+	iter := pebbleIterPool.Get().(*pebbleIterator)
+	iter.reusable = false // defensive
+	iter.init(nil, opts, StandardDurability, p.parent)
+	iter.iter, err = p.batch.NewBatchOnlyIter(ctx, &iter.options)
+	if err != nil {
+		iter.Close()
+		panic(err)
+	}
+	return iter, nil
+}
+
 // NewEngineIterator implements the Batch interface.
 func (p *pebbleBatch) NewEngineIterator(
 	ctx context.Context, opts IterOptions,

@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -626,13 +627,17 @@ func populatePrevValsInLogicalOpLog(
 	return nil
 }
 
+var batchOnlyIterCount int64
+var totalIterCount int64
+var errorCount int64
+
 // handleLogicalOpLogRaftMuLocked passes the logical op log to the active
 // rangefeed, if one is running. The method accepts a reader, which is used to
 // look up the values associated with key-value writes in the log before handing
 // them to the rangefeed processor. No-op if a rangefeed is not active. Requires
 // raftMu to be locked.
 func (r *Replica) handleLogicalOpLogRaftMuLocked(
-	ctx context.Context, ops *kvserverpb.LogicalOpLog, reader storage.Reader,
+	ctx context.Context, ops *kvserverpb.LogicalOpLog, reader storage.Batch,
 ) {
 	p, filter := r.getRangefeedProcessorAndFilter()
 	if p == nil {
@@ -658,6 +663,7 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 
 	// When reading straight from the Raft log, some logical ops will not be
 	// fully populated. Read from the Reader to populate all fields.
+	batchOnlyIter := true
 	for _, op := range ops.Ops {
 		var key []byte
 		var ts hlc.Timestamp
@@ -665,7 +671,11 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 		switch t := op.GetValue().(type) {
 		case *enginepb.MVCCWriteValueOp:
 			key, ts, valPtr = t.Key, t.Timestamp, &t.Value
+			if ts.IsEmpty() {
+				batchOnlyIter = false
+			}
 		case *enginepb.MVCCCommitIntentOp:
+			batchOnlyIter = false
 			key, ts, valPtr = t.Key, t.Timestamp, &t.Value
 		case *enginepb.MVCCWriteIntentOp,
 			*enginepb.MVCCUpdateIntentOp,
@@ -708,11 +718,22 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 		// Read the value directly from the Reader. This is performed in the
 		// same raftMu critical section that the logical op's corresponding
 		// WriteBatch is applied, so the value should exist.
-		valRes, vh, err := storage.MVCCGetWithValueHeader(ctx, reader, key, ts, storage.MVCCGetOptions{Tombstones: true})
+		valRes, vh, err := storage.MVCCGetWithValueHeader(ctx, reader, key, ts,
+			storage.MVCCGetOptions{Tombstones: true, BatchOnlyIter: batchOnlyIter})
 		if valRes.Value == nil && err == nil {
 			err = errors.New("value missing in reader")
 		}
+		if batchOnlyIter {
+			atomic.AddInt64(&batchOnlyIterCount, 1)
+		}
+		count := atomic.AddInt64(&totalIterCount, 1)
+		if count%10000 == 0 {
+			log.Infof(ctx, "rangefeed: count: %d, batch-only: %d, error: %d",
+				atomic.LoadInt64(&totalIterCount), atomic.LoadInt64(&batchOnlyIterCount),
+				atomic.LoadInt64(&errorCount))
+		}
 		if err != nil {
+			atomic.AddInt64(&errorCount, 1)
 			r.disconnectRangefeedWithErr(p, kvpb.NewErrorf(
 				"error consuming %T for key %v @ ts %v: %v", op, key, ts, err,
 			))

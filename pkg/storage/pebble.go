@@ -731,6 +731,10 @@ func (l pebbleLogger) Infof(format string, args ...interface{}) {
 	log.Storage.InfofDepth(l.ctx, l.depth, format, args...)
 }
 
+func (l pebbleLogger) Errorf(format string, args ...interface{}) {
+	log.Storage.ErrorfDepth(l.ctx, l.depth, format, args...)
+}
+
 func (l pebbleLogger) Fatalf(format string, args ...interface{}) {
 	log.Storage.FatalfDepth(l.ctx, l.depth, format, args...)
 }

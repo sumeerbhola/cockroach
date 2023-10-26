@@ -1100,6 +1100,7 @@ type Batch interface {
 	// mutations were done.
 	Reader
 	WriteBatch
+	NewBatchOnlyMVCCIterator(ctx context.Context, opts IterOptions) (MVCCIterator, error)
 }
 
 // WriteBatch is the interface for write batch specific operations.

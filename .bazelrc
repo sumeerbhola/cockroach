@@ -64,7 +64,7 @@ test:ci --test_output=errors
 test:ci --test_tmpdir=/artifacts/tmp
 build:ci --config=cibase
 
-build:cross --stamp
+# build:cross --stamp
 
 # Cross-compilation configurations. Add e.g. --config=crosslinux to turn these on.
 # Generally these should be used for development builds. Each cross config has
@@ -72,7 +72,7 @@ build:cross --stamp
 # `--workspace_status_command`; if using these `base` configs, you need to
 # specify an appropriate `--workspace_status_command`. These `base` configs are
 # used by the release process which needs to have more control over stamping.
-build:crosslinux '--workspace_status_command=./build/bazelutil/stamp.sh x86_64-pc-linux-gnu'
+# build:crosslinux '--workspace_status_command=./build/bazelutil/stamp.sh x86_64-pc-linux-gnu'
 build:crosslinux --config=crosslinuxbase
 build:crosslinuxbase --platforms=//build/toolchains:cross_linux
 build:crosslinuxbase --config=cross
