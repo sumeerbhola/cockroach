@@ -160,6 +160,9 @@ func runMetaTest(run testRun) {
 				outputFile:     outputFileWriter,
 				engineSequence: engineSequence,
 			}
+			if firstRunExecuted && engineRun.engineSequence.name != "random=3" {
+				return
+			}
 			runMetaTestForEngines(engineRun)
 			firstRunExecuted = true
 		})
@@ -180,6 +183,7 @@ func runPebbleEquivalenceTest(t *testing.T) {
 	ctx := context.Background()
 	// This test times out with the race detector enabled.
 	_, seed := randutil.NewTestRand()
+	seed = 1098000421847756593
 
 	engineSeqs := make([]engineSequence, 0, numStandardOptions+numRandomOptions)
 

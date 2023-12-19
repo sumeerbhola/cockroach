@@ -12,6 +12,7 @@ package metamorphic
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -64,7 +66,7 @@ func (e *engineConfig) create(path string, fs vfs.FS) (storage.Engine, error) {
 
 	pebbleConfig.Opts.Experimental.IneffectualSingleDeleteCallback = func(userKey []byte) {
 		// TODO(sumeer): figure out what is causing these callbacks.
-		if false {
+		if true {
 			ek, ok := storage.DecodeEngineKey(userKey)
 			if !ok {
 				log.Fatalf(context.Background(), "unable to decode %s", roachpb.Key(userKey).String())
@@ -73,9 +75,54 @@ func (e *engineConfig) create(path string, fs vfs.FS) (storage.Engine, error) {
 			if err != nil {
 				log.Fatalf(context.Background(), "%s", err.Error())
 			}
+			fmt.Printf("Ineffectual SingleDel on k=%s str=%s txn=%s\n",
+				ltk.Key.String(), ltk.Strength.String(), ltk.TxnUUID.String())
 			log.Fatalf(context.Background(), "Ineffectual SingleDel on k=%s str=%s txn=%s",
 				ltk.Key.String(), ltk.Strength.String(), ltk.TxnUUID.String())
 		}
+	}
+
+	keyStrFunc := func(userKey []byte) (string, bool) {
+		ek, ok := storage.DecodeEngineKey(userKey)
+		if !ok {
+			return fmt.Sprintf("not-engine-key %q", userKey), true
+		}
+		if ek.IsLockTableKey() {
+			ltk, err := ek.ToLockTableKey()
+			if err != nil {
+				panic(err)
+			}
+			return fmt.Sprintf("%s.%s.%s",
+				ltk.Key.String(), ltk.Strength.String(), ltk.TxnUUID.String()), true
+		} else if ek.IsMVCCKey() {
+			mk, err := ek.ToMVCCKey()
+			if err != nil {
+				panic(err)
+			}
+			if mk.IsValue() || !bytes.HasPrefix(mk.Key, keys.LocalRangeLockTablePrefix) {
+				return "mvcc-key", false
+			} else {
+				k, err := keys.DecodeLockTableSingleKey(mk.Key)
+				if err != nil {
+					panic(err)
+				}
+				return fmt.Sprintf("%s (bare)", k.String()), true
+			}
+		} else {
+			panic("not lt or mvcc key")
+		}
+	}
+	pebbleConfig.Opts.Experimental.PrintPointCallback = func(k *pebble.InternalKey, v []byte) {
+		userKeyStr, doPrint := keyStrFunc(k.UserKey)
+		if doPrint {
+			fmt.Printf("%s %s#%d\n", userKeyStr, k.Kind().String(), k.SeqNum())
+		}
+	}
+	pebbleConfig.Opts.Experimental.PrintRangeDelCallback = func(
+		start []byte, end []byte, seqNum uint64) {
+		startStr, _ := keyStrFunc(start)
+		endStr, _ := keyStrFunc(end)
+		fmt.Printf("[%s, %s) RANGEDEL#%d\n", startStr, endStr, seqNum)
 	}
 	return storage.NewPebble(context.Background(), pebbleConfig)
 }
