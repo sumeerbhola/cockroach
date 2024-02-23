@@ -216,6 +216,11 @@ func (sm *replicaStateMachine) ApplySideEffects(
 	}
 
 	// On ConfChange entries, inform the raft.RawNode.
+	//
+	// TODO(sumeer): this is also where we should switch to only maintaining
+	// quorum on the latest RangeDescriptor at the leaseholder of a dme-based
+	// lease. By this time, since the intent has been resolved, can a new conf
+	// change have begun?
 	if err := sm.maybeApplyConfChange(ctx, cmd); err != nil {
 		return nil, errors.Wrapf(err, "unable to apply conf change")
 	}

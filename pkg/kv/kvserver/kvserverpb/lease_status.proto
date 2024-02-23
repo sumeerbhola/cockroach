@@ -80,6 +80,9 @@ enum LeaseState {
 // LeaseStatus holds the lease state, the current clock time at which the
 // state is accurate, the request time at which the status is accurate, the
 // lease iself, and optionally the liveness if the lease is epoch-based.
+//
+// TODO(sumeer): is LeaseStatus persisted somewhere in the state machine or
+// passed through raft entries? No. is it passed in any RPC payload? Maybe.
 message LeaseStatus {
   // Lease which this status describes.
   roachpb.Lease lease = 1 [(gogoproto.nullable) = false];
@@ -97,4 +100,14 @@ message LeaseStatus {
   // The minimum observed timestamp on a transaction that is respected by this lease.
   util.hlc.Timestamp min_valid_observed_timestamp = 7 [(gogoproto.nullable) = false,
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
+  DistributedEpochLeaseLiveness distributed_epoch_liveness = 8;
+}
+
+// TODO(sumeer): At the leaseholder, this is the expiration lower-bound. At
+// non-leaseholders, this can be higher than the actual expiration (in case
+// renewal fails) since they do not have complete information. Do
+// non-leaseholders only evaluate LeaseStatus to decide whether they should
+// step up to be leaseholder?
+message DistributedEpochLeaseLiveness {
+  util.hlc.Timestamp expiration = 3 [(gogoproto.nullable) = false];
 }

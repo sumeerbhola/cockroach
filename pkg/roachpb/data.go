@@ -1812,6 +1812,8 @@ func (l Lease) String() string {
 }
 
 // SafeFormat implements the redact.SafeFormatter interface.
+//
+// TODO(sumeer): update to print stuff about distributed multi-epoch leases.
 func (l Lease) SafeFormat(w redact.SafePrinter, _ rune) {
 	if l.Empty() {
 		w.SafeString("<empty>")
@@ -1849,12 +1851,17 @@ const (
 	// LeaseEpoch allows range operations while the node liveness epoch
 	// is equal to the lease epoch.
 	LeaseEpoch
+	// LeaseDistributedMultiEpoch is a distributed multi-epoch lease.
+	LeaseDistributedMultiEpoch = 3
 )
 
 // Type returns the lease type.
 func (l Lease) Type() LeaseType {
 	if l.Epoch == 0 {
-		return LeaseExpiration
+		if l.DistributedEpoch == nil {
+			return LeaseExpiration
+		}
+		return LeaseDistributedMultiEpoch
 	}
 	return LeaseEpoch
 }
@@ -1887,6 +1894,27 @@ func (l Lease) Speculative() bool {
 // lease with the same replica and start time (representing a
 // promotion from expiration-based to epoch-based), but the
 // reverse is not true.
+//
+// TODO(sumeer): need to think through the state transitions between different
+// kinds of leases.
+//
+// Note that cmd_lease_request.go sets newL.Start to MinProposedTS to ensure
+// that the Lease.sequence is not reused. We need to make sure we respect that
+// here for dme-based leases, since one of the callers of Equivalent is
+// evalNewLease, which uses it to decide what Sequence to assign.
+//
+// We want to allow the following state transitions without incrementing
+// the Sequence:
+//   - dme-based => expiration-based: Presumably the Start time equality that
+//     I have questions about below suffices?
+//   - expiration-based => dme-based: Will additionally verify the PrevLease
+//     reference from the dme-based lease.
+//
+// TODO(sumeer): Why does the transition from epoch-based to expiration-based
+// lease require a sequence number increment? Is it because we can't be sure
+// that the expiration-based lease is stale and shortening the lease expiry
+// time? But we check in CheckForcedErr using PrevLeaseProposal -- isn't that
+// sufficient?
 func (l Lease) Equivalent(newL Lease, expToEpochEquiv bool) bool {
 	// Ignore proposed timestamp & deprecated start stasis.
 	l.ProposedTS, newL.ProposedTS = nil, nil
@@ -1928,6 +1956,14 @@ func (l Lease) Equivalent(newL Lease, expToEpochEquiv bool) bool {
 			// previous expiration carried by the expiration-based lease. This is a
 			// case where Equivalent is not commutative, as the reverse transition
 			// (from epoch-based to expiration-based) requires a sequence increment.
+			//
+			// TODO(sumeer): isn't there a risk that the epoch-based lease doesn't
+			// realize that the expiration-based lease it is replacing is not the
+			// one under which it was proposed and expiration-based lease has been
+			// extended, and it is overwriting that extension? Is the Start
+			// comparison somehow protecting against this? If newL is using
+			// newL.Start == l.Start, why would the intermediate lease that newL
+			// doesn't know about also have used the same Start?
 			//
 			// Ignore epoch and expiration. The remaining fields which are compared
 			// are Replica and Start.
@@ -1983,6 +2019,8 @@ func equivalentTimestamps(a, b *hlc.Timestamp) bool {
 // forked from the gogoproto generated code to allow l.Expiration == nil and
 // l.Expiration == &hlc.Timestamp{} to compare equal. It also ignores
 // DeprecatedStartStasis entirely to allow for its removal in a later release.
+//
+// TODO(sumeer): update.
 func (l *Lease) Equal(that interface{}) bool {
 	if that == nil {
 		return l == nil

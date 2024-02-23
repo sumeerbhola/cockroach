@@ -1,0 +1,93 @@
+// Copyright 2017 The Cockroach Authors.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+syntax = "proto3";
+package cockroach.kv.kvserver.dme_liveness.dme_livenesspb;
+option go_package = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/dme_liveness/dme_livenesspb";
+
+import "util/hlc/timestamp.proto";
+import "gogoproto/gogo.proto";
+
+message StoreIdentifier {
+  int32 node_id = 1 [(gogoproto.customname) = "NodeID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.NodeID"];
+  int32 store_id = 2 [(gogoproto.customname) = "StoreID", (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/roachpb.StoreID"];
+}
+
+// Logical messages are Heartbeat, SupportState, WithdrawSupport. These all
+// have a Header, though the header is not physically included in these
+// message declarations (since many of these logical messages can be bundled
+// into a single physical message).
+//
+// MessageSender is responsible for retransmitting the latest Heartbeat,
+// SupportState for the given Header until it is known to have been received
+// (backoff is allowed). Since the number of distinct Headers is
+// O(num-stores), the state remembered in the MessageSender is small.
+//
+// MessageSender is responsible for retransmitting the latest WithdrawSupport
+// for the given (Header, WithdrawSupport.Store). In the worst-case this is
+// O(num-stores^2) of space.
+message Header {
+  StoreIdentifier from = 1 [(gogoproto.nullable) = false];
+  StoreIdentifier to = 2 [(gogoproto.nullable) = false];
+}
+
+// Heartbeat is a request for support by the from store, sent to the to store.
+message Heartbeat {
+  int64 epoch = 1;
+  util.hlc.Timestamp now = 2 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
+  util.hlc.Timestamp expiration = 3 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.Timestamp"];
+}
+
+message Support {
+  int64 epoch = 1;
+  util.hlc.Timestamp start_time = 2 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.ClockTimestamp"];
+  // If empty Epoch is not currently supported.
+  util.hlc.Timestamp end_time = 3 [(gogoproto.nullable) = false,
+    (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/util/hlc.Timestamp"];
+}
+
+// SupportWithStoreID informs the to store about the support that the from store is
+// giving to another store (specified by Support.Store).
+message SupportWithStoreID {
+  StoreIdentifier store = 1 [(gogoproto.nullable) = false];
+  Support support = 2 [(gogoproto.nullable) = false];
+}
+
+// SupportState bundles the support the to store is giving to all other
+// stores.
+message SupportState {
+  repeated SupportWithStoreID support = 3  [(gogoproto.nullable) = false];
+}
+
+// WithdrawSupport is a request sent to the to store, asking it to withdraw
+// support from WithdrawSupport.Store, up to MinSupportedEpoch-1. The actual
+// success of this withdrawal will be communicated by a SupportState message
+// from "to" send to "from". WithdrawSupport has no effect if the to store is
+// currently supporting some epoch, even if that epoch is < MinSupportEpoch.
+message WithdrawSupport {
+  StoreIdentifier store = 1  [(gogoproto.nullable) = false];
+  int64 min_support_epoch = 2;
+}
+
+// Physical RPC request message in the implementation. RPCs are simpler than a
+// stream protocol since the empty response serves as a simple ack, instead of
+// explicitly adding sequence numbers.
+message Request {
+  Header header = 1 [(gogoproto.nullable) = false];
+
+  Heartbeat heartbeat_request = 2;
+  SupportState support_state = 4;
+  repeated WithdrawSupport withdraw_support_request = 5 [(gogoproto.nullable) = false];
+}
+
+message Response {}

@@ -61,6 +61,13 @@ func RequestLease(
 	// args.PrevLease so that we can detect lease requests that will
 	// inevitably fail early and reject them with a detailed
 	// LeaseRejectedError before going through Raft.
+	//
+	// TODO(sumeer): prevLease can be later than args.PrevLease. We have picked
+	// args.Lease.Start based on args.PrevLease, and that assumption may not be
+	// valid with prevLease. Can we simply check that the two are the same here?
+	// Currently we only use args.PrevLease.Sequence using it to set
+	// proposal.command.ProposerLeaseSequence, but what if prevLease and
+	// args.PrevLease share the same sequence.
 	prevLease, _ := cArgs.EvalCtx.GetLease()
 	rErr := &kvpb.LeaseRejectedError{
 		Existing:  prevLease,

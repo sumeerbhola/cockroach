@@ -116,6 +116,13 @@ func CheckForcedErr(
 	// proposer_lease field in the proto.
 	leaseMismatch := raftCmd.ProposerLeaseSequence != replicaState.Lease.Sequence
 	if !leaseMismatch && isLeaseRequest {
+		// TODO(sumeer): I don't quite understand this. Is this only for
+		// expiration-based leases where the lease extensions are going through
+		// raft, hence the lease sequence number is not changing? Why would
+		// "neither will increment the sequence number" if it is not a lease
+		// extension? Do I need to change some code here for distributed epoch
+		// leases?
+		//
 		// Lease sequence numbers are a reflection of lease equivalency
 		// between subsequent leases. However, Lease.Equivalent is not fully
 		// symmetric, meaning that two leases may be Equivalent to a third
@@ -155,6 +162,15 @@ func CheckForcedErr(
 			// NB: ProposedTS can be nil if the right-hand side is the Range's initial zero Lease.
 			(!raftCmd.ReplicatedEvalResult.PrevLeaseProposal.Equal(replicaState.Lease.ProposedTS)) {
 			leaseMismatch = true
+		}
+		if requestedLease.DistributedEpoch != nil &&
+			(requestedLease.DistributedEpoch.PrevLeaseSequence != replicaState.Lease.Sequence ||
+				requestedLease.DistributedEpoch.PrevLeaseProposal.Equal(*replicaState.Lease.ProposedTS)) {
+			if !leaseMismatch {
+				// TODO(sumeer): also log a warning that this prev lease reference was
+				// actually necessary with dme-based leases.
+				leaseMismatch = true
+			}
 		}
 	}
 	if leaseMismatch {

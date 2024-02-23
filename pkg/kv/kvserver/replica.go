@@ -524,6 +524,9 @@ type Replica struct {
 		// - a lease cannot be used after a transfer is initiated. Moreover, even
 		// lease extension that were in flight at the time of the transfer cannot be
 		// used, if they eventually apply.
+		//
+		// NB: this is initialized on every Replica, not just the leaseholder, but
+		// only used when this Replica is the leaseholder.
 		minLeaseProposedTS hlc.ClockTimestamp
 
 		// minValidObservedTimestamp is the minimum timestamp from an external

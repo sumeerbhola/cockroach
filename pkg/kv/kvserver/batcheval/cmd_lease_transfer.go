@@ -74,6 +74,8 @@ func TransferLease(
 	// args.PrevLease so that we can detect lease transfers that will
 	// inevitably fail early and reject them with a detailed
 	// LeaseRejectedError before going through Raft.
+	//
+	// TODO(sumeer): also change here.
 	prevLease, _ := cArgs.EvalCtx.GetLease()
 
 	newLease := args.Lease

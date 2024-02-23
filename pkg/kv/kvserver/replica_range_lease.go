@@ -51,6 +51,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/constraint"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/dme_liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
@@ -190,6 +191,7 @@ func (h *leaseRequestHandle) resolve(pErr *kvpb.Error) { h.c <- pErr }
 // The actual execution of the RequestLease Raft request is delegated
 // to a replica.
 //
+// TODO(sumeer): update comment.
 // There are two types of leases: expiration-based and epoch-based.
 // Expiration-based leases are considered valid as long as the wall
 // time is less than the lease expiration timestamp minus the maximum
@@ -247,6 +249,13 @@ func (p *pendingLeaseRequest) RequestPending() (roachpb.Lease, bool) {
 // transfer needs to be set if the request represents a lease transfer (as
 // opposed to an extension, or acquiring the lease when none is held).
 //
+// TODO(sumeer): can easily plumb RangeDescriptor from the callers since they
+// have Replica.mu.state.Desc. But if this is happening due to the leader
+// realizing the lease is expired, we need to use the same RangeDescriptor as
+// the one we used in leaseStatus. No! If we know it is expired, it is always
+// expired. The lease could have been extended via transitioning to
+// expiration-based lease, but then that will fail the prev lease check.
+//
 // Requires repl.mu is exclusively locked.
 func (p *pendingLeaseRequest) InitOrJoinRequest(
 	ctx context.Context,
@@ -275,13 +284,24 @@ func (p *pendingLeaseRequest) InitOrJoinRequest(
 	acquisition := !status.Lease.OwnedBy(p.repl.store.StoreID())
 	extension := !transfer && !acquisition
 	_ = extension // not used, just documentation
-
+	// TODO(sumeer): cases:
+	// - acquisition && transfer: cooperative to other store
+	// - acquisition && !transfer: uncooperative to other store
+	// - !acquisition && !transfer: extension. Do we ever do this for
+	//   epoch-bases leases or distributed multi-epoch leases?
+	// - !acquisition && transfer: is this possible?
 	if acquisition {
+		// TODO(sumeer): both acquisition and transfer can be true, in which case
+		// this is a cooperative lease transfer (assuming transfer=true refers to
+		// LeaseAcquisitionType_Transfer). Does that mean we have to
+		// (unnecessarily?) wait until kvserverpb.LeaseState_EXPIRED?
+		//
 		// If this is a non-cooperative lease change (i.e. an acquisition), it
 		// is up to us to ensure that Lease.Start is greater than the end time
 		// of the previous lease. This means that if status refers to an expired
 		// epoch lease, we must increment the liveness epoch of the previous
 		// leaseholder *using status.Liveness*, which we know to be expired *at
+		// TODO(sumeer): there is no status.Timestamp
 		// status.Timestamp*, before we can propose this lease. If this
 		// increment fails, we cannot propose this new lease (see handling of
 		// ErrEpochAlreadyIncremented in requestLeaseAsync).
@@ -332,7 +352,7 @@ func (p *pendingLeaseRequest) InitOrJoinRequest(
 		// record).
 		reqLease.Expiration = &hlc.Timestamp{}
 		*reqLease.Expiration = status.Now.ToTimestamp().Add(int64(p.repl.store.cfg.RangeLeaseDuration), 0)
-	} else {
+	} else if true /* TODO(sumeer): narrow this to epoch-based lease predicate */ {
 		// Get the liveness for the next lease holder and set the epoch in the lease request.
 		l, ok := p.repl.store.cfg.NodeLiveness.GetLiveness(nextLeaseHolder.NodeID)
 		if !ok || l.Epoch == 0 {
@@ -344,6 +364,16 @@ func (p *pendingLeaseRequest) InitOrJoinRequest(
 			return llHandle
 		}
 		reqLease.Epoch = l.Epoch
+	} else {
+		// Distributed-epoch lease.
+		// TODO(sumeer): populate RangeDescriptor.
+		var err error
+		reqLease.DistributedEpoch, err = dme_liveness.DistEpochLeaseHelperSingleton.FillLeaseProposal(
+			status.Now, status.Lease, nextLeaseHolder, transfer, roachpb.RangeDescriptor{})
+		if err != nil {
+			// TODO(sumeer): propagate error.
+			panic(err)
+		}
 	}
 
 	var leaseReq kvpb.Request
@@ -362,6 +392,8 @@ func (p *pendingLeaseRequest) InitOrJoinRequest(
 			// knob.
 			log.Fatal(ctx, "bypassSafetyChecks not supported for RequestLeaseRequest")
 		}
+		// TODO(sumeer): Is nextLeaseHolder the same as p.repl? If not, why do we
+		// care what the local replica object thinks?
 		minProposedTS := p.repl.mu.minLeaseProposedTS
 		leaseReq = &kvpb.RequestLeaseRequest{
 			RequestHeader: reqHeader,
@@ -484,6 +516,8 @@ var logFailedHeartbeatOwnLiveness = log.Every(10 * time.Second)
 // requestLease sends a synchronous transfer lease or lease request to the
 // specified replica. It is only meant to be called from requestLeaseAsync,
 // since it does not coordinate with other in-flight lease requests.
+//
+// TODO(sumeer): what "specified replica"?
 func (p *pendingLeaseRequest) requestLease(
 	ctx context.Context,
 	nextLeaseHolder roachpb.ReplicaDescriptor,
@@ -740,9 +774,10 @@ func (r *Replica) leaseStatus(
 		MinValidObservedTimestamp: minValidObservedTS,
 	}
 	var expiration hlc.Timestamp
-	if lease.Type() == roachpb.LeaseExpiration {
+	leaseType := lease.Type()
+	if leaseType == roachpb.LeaseExpiration {
 		expiration = lease.GetExpiration()
-	} else {
+	} else if leaseType == roachpb.LeaseEpoch {
 		l, ok := r.store.cfg.NodeLiveness.GetLiveness(lease.Replica.NodeID)
 		status.Liveness = l.Liveness
 		if !ok || status.Liveness.Epoch < lease.Epoch {
@@ -769,6 +804,21 @@ func (r *Replica) leaseStatus(
 			return status
 		}
 		expiration = status.Liveness.Expiration.ToTimestamp()
+	} else if leaseType == roachpb.LeaseDistributedMultiEpoch {
+		// TODO(sumeer): is there an implicit assumption that now is not less than
+		// Lease.Start?
+		// TODO(sumeer): populate RangeDescriptor.
+		var err error
+		var exp kvserverpb.DistributedEpochLeaseLiveness
+		exp, err = dme_liveness.DistEpochLeaseHelperSingleton.LeaseExpiry(
+			now, lease, roachpb.RangeDescriptor{})
+		if err != nil {
+			// TODO(sumeer): propagate err.
+			panic(err)
+		}
+		expiration = exp.Expiration
+	} else {
+		panic("unknown lease type")
 	}
 	maxOffset := r.store.Clock().MaxOffset()
 	stasis := expiration.Add(-int64(maxOffset), 0)
@@ -934,6 +984,9 @@ func (r *Replica) requestLeaseLocked(
 // replica. Otherwise, a NotLeaseHolderError is returned.
 //
 // AdminTransferLease implements the ReplicaLeaseMover interface.
+//
+// TODO(sumeer): reminder that this is executing on what we currently think is
+// the leaseholder.
 func (r *Replica) AdminTransferLease(
 	ctx context.Context, target roachpb.StoreID, bypassSafetyChecks bool,
 ) error {
@@ -1646,3 +1699,7 @@ func CheckStoreAgainstLeasePreferences(
 	}
 	return LeasePreferencesViolating
 }
+
+// TODO(sumeer): Too many source files in kvserver peer into Lease proto. Can
+// we abstract this into a separate package that the kvserver code can pass
+// Lease protos etc. too and ask the questions they want answered?

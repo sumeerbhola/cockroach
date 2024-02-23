@@ -560,6 +560,12 @@ func (b *propBuf) FlushLockedWithRaftGroup(
 				firstErr = err
 				continue
 			}
+			// TODO(sumeer): we are at the leaseholder and are sure that the conf
+			// change is going to get proposed. We need to start using the new conf
+			// quorum in addition to the existing config, in order to maintain the
+			// lease. Need to record this new conf somehow in the Replica. Also need
+			// to clear it from the Replica if stop being leaseholder. If stay
+			// leaseholder, is there any possibility that the conf change is lost?
 
 			typ, data, err := raftpb.MarshalConfChange(cc)
 			if err != nil {

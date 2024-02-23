@@ -1,0 +1,20 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "dme_liveness",
+    srcs = [
+        "liveness.go",
+        "manager.go",
+    ],
+    importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/dme_liveness",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/kv/kvserver/dme_liveness/dme_livenesspb",
+        "//pkg/kv/kvserver/kvserverpb",
+        "//pkg/roachpb",
+        "//pkg/util/hlc",
+        "//pkg/util/stop",
+        "//pkg/util/timeutil",
+        "@com_github_cockroachdb_errors//:errors",
+    ],
+)
