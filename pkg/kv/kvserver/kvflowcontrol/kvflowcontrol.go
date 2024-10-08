@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowcontrolpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol/kvflowinspectpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -155,14 +156,12 @@ func GetV2EnabledWhenLeaderLevel(
 	if knobs != nil && knobs.OverrideV2EnabledWhenLeaderLevel != nil {
 		return knobs.OverrideV2EnabledWhenLeaderLevel()
 	}
-	// TODO(kvoli): Enable once #130619 merges and tests affected by enabling v2
-	// are addressed:
-	// if st.Version.IsActive(ctx, clusterversion.V24_3_UseRACV2Full) {
-	// 	return V2EnabledWhenLeaderV2Encoding
-	// }
-	// if st.Version.IsActive(ctx, clusterversion.V24_3_UseRACV2WithV1EntryEncoding) {
-	// 	return V2EnabledWhenLeaderV1Encoding
-	// }
+	if st.Version.IsActive(ctx, clusterversion.V24_3_UseRACV2Full) {
+		return V2EnabledWhenLeaderV2Encoding
+	}
+	if st.Version.IsActive(ctx, clusterversion.V24_3_UseRACV2WithV1EntryEncoding) {
+		return V2EnabledWhenLeaderV1Encoding
+	}
 	return V2NotEnabledWhenLeader
 }
 
