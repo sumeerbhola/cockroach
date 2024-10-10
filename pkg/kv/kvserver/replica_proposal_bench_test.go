@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -43,13 +44,19 @@ func BenchmarkReplicaProposal(b *testing.B) {
 	} {
 		for _, withFollower := range []bool{false, true} {
 			b.Run(fmt.Sprintf("bytes=%s,withFollower=%t", humanizeutil.IBytes(bytes), withFollower), func(b *testing.B) {
-				runBenchmarkReplicaProposal(b, bytes, withFollower)
+				runBenchmarkReplicaProposal(b, bytes, withFollower, kvpb.AdmissionHeader{}, false)
 			})
 		}
 	}
 }
 
-func runBenchmarkReplicaProposal(b *testing.B, bytes int64, withFollower bool) {
+func runBenchmarkReplicaProposal(
+	b *testing.B,
+	bytes int64,
+	withFollower bool,
+	admissionHeader kvpb.AdmissionHeader,
+	inMemoryStore bool,
+) {
 	defer leaktest.AfterTest(b)()
 	defer log.Scope(b).Close(b)
 	ctx := context.Background()
@@ -59,7 +66,12 @@ func runBenchmarkReplicaProposal(b *testing.B, bytes int64, withFollower bool) {
 		nodes = 2
 	}
 
-	args := base.TestClusterArgs{}
+	args := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			StoreSpecs: []base.StoreSpec{{InMemory: inMemoryStore}},
+			CacheSize:  512 << 20,
+		},
+	}
 	args.ReplicationMode = base.ReplicationManual
 	tc := testcluster.StartTestCluster(b, nodes, args)
 	defer tc.Stopper().Stop(ctx)
@@ -88,6 +100,8 @@ func runBenchmarkReplicaProposal(b *testing.B, bytes int64, withFollower bool) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ba.Timestamp = repl.Clock().Now()
+		ba.AdmissionHeader = admissionHeader
+		ba.AdmissionHeader.CreateTime = ba.Timestamp.WallTime
 		_, pErr := repl.Send(ctx, &ba)
 		if err := pErr.GoError(); err != nil {
 			b.Fatal(err)
@@ -95,4 +109,11 @@ func runBenchmarkReplicaProposal(b *testing.B, bytes int64, withFollower bool) {
 	}
 	b.StopTimer()
 	b.SetBytes(bytes)
+}
+
+func BenchmarkReplicaProposalSmallElasticWrites(b *testing.B) {
+	runBenchmarkReplicaProposal(b, 8, true, kvpb.AdmissionHeader{
+		Priority: int32(admissionpb.UserLowPri),
+		Source:   kvpb.AdmissionHeader_FROM_SQL,
+	}, true)
 }
