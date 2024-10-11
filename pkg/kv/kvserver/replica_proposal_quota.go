@@ -115,8 +115,7 @@ func (r *Replica) shouldReplicationAdmissionControlUsePullMode(ctx context.Conte
 }
 
 func (r *Replica) replicationAdmissionControlModeToUse(ctx context.Context) rac2.RaftMsgAppMode {
-	// TODO(sumeer): remove the false.
-	usePullMode := r.shouldReplicationAdmissionControlUsePullMode(ctx) && false
+	usePullMode := r.shouldReplicationAdmissionControlUsePullMode(ctx)
 	if usePullMode {
 		return rac2.MsgAppPull
 	}
