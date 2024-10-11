@@ -12,6 +12,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvflowcontrol"
@@ -567,6 +568,7 @@ type rangeController struct {
 		replicas map[roachpb.ReplicaID]struct{}
 	}
 	entryFCStateScratch []entryFCState
+	every               log.EveryN
 }
 
 // voterStateForWaiters informs whether WaitForEval is required to wait for
@@ -612,14 +614,70 @@ func NewRangeController(
 		leaseholder:   init.Leaseholder,
 		nextRaftIndex: init.NextRaftIndex,
 		replicaMap:    make(map[roachpb.ReplicaID]*replicaState),
+		every:         log.Every(30 * time.Second),
 	}
 	rc.scheduledMu.replicas = make(map[roachpb.ReplicaID]struct{})
 	rc.mu.waiterSetRefreshCh = make(chan struct{})
 	rc.mu.lastSendQueueStats = make(RangeSendQueueStats, 0, len(init.ReplicaSet))
 	rc.updateReplicaSetRaftMuLocked(ctx, init.ReplicaSet)
-	rc.updateWaiterSetsRaftMuLocked()
+	rc.updateWaiterSetsRaftMuLocked(ctx)
 	rc.opts.RangeControllerMetrics.Count.Inc(1)
 	return rc
+}
+
+func (rc *rangeController) DebugStringRaftMuLockedRCLocked() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "r%v:\n", rc.opts.RangeID)
+	for _, rs := range rc.replicaMap {
+		fmt.Fprintf(&b, "%v: ", rs.desc)
+		rss := rs.sendStream
+		if rss == nil {
+			fmt.Fprintf(&b, "closed\n")
+			b.WriteString("++++\n")
+			continue
+		}
+		func() {
+			rss.mu.Lock()
+			defer rss.mu.Unlock()
+			fmt.Fprintf(&b,
+				"state=%v closed=%v send_queue=[%v,%v) precise_q_size=%v",
+				rss.mu.connectedState, rss.mu.closed,
+				rss.mu.sendQueue.indexToSend,
+				rss.mu.sendQueue.nextRaftIndex, rss.mu.sendQueue.preciseSizeSum)
+			if rss.mu.sendQueue.forceFlushScheduled {
+				fmt.Fprintf(&b, " force-flushing")
+			}
+			if rss.mu.sendQueue.deductedForSchedulerTokens > 0 {
+				fmt.Fprintf(&b, " deducted=%v", rss.mu.sendQueue.deductedForSchedulerTokens)
+			}
+			if rss.mu.sendQueue.tokenWatcherHandle != (SendTokenWatcherHandle{}) {
+				fmt.Fprintf(&b, " watching-for-tokens")
+			}
+			fmt.Fprintf(&b, "\n")
+			fmt.Fprintf(&b, "eval deducted: reg=%v ela=%v\n",
+				rss.mu.eval.tokensDeducted[admissionpb.RegularWorkClass],
+				rss.mu.eval.tokensDeducted[admissionpb.ElasticWorkClass])
+			fmt.Fprintf(&b, "eval original in send-q: reg=%v ela=%v\n",
+				rss.mu.sendQueue.originalEvalTokens[admissionpb.RegularWorkClass],
+				rss.mu.sendQueue.originalEvalTokens[admissionpb.ElasticWorkClass])
+			b.WriteString("++++\n")
+		}()
+	}
+
+	fmt.Fprintf(&b, "waitForEval: voter:")
+	for i, vs := range rc.mu.voterSets {
+		for _, v := range vs {
+			fmt.Fprintf(&b, " %d:[%d q:%t r:%t l:%t ls:%t]", v.replicaID, i, v.hasSendQ,
+				v.isStateReplicate, v.isLeader, v.isLeaseHolder)
+		}
+	}
+	if len(rc.mu.nonVoterSet) > 0 {
+		fmt.Fprintf(&b, "non-voter: ")
+		for _, v := range rc.mu.nonVoterSet {
+			fmt.Fprintf(&b, "%d:[q:%t r:%t]", v.replicaID, v.hasSendQ, v.isStateReplicate)
+		}
+	}
+	return b.String()
 }
 
 // WaitForEval blocks until there are positive tokens available for the
@@ -1076,13 +1134,19 @@ func (rc *rangeController) HandleRaftEventRaftMuLocked(ctx context.Context, e Ra
 	// If there was a quorum change, update the voter sets, triggering the
 	// refresh channel for any requests waiting for eval tokens.
 	if shouldWaitChange {
-		rc.updateWaiterSetsRaftMuLocked()
+		rc.updateWaiterSetsRaftMuLocked(ctx)
 	}
 
 	// It may have been longer than the sendQueueStatRefreshInterval since we
 	// last updated the send queue stats. Maybe update them now.
 	rc.maybeUpdateSendQueueStats()
-
+	if rc.every.ShouldLog() {
+		func() {
+			rc.mu.Lock()
+			defer rc.mu.Unlock()
+			log.Infof(ctx, "%s", rc.DebugStringRaftMuLockedRCLocked())
+		}()
+	}
 	return nil
 }
 
@@ -1263,11 +1327,11 @@ func (rc *rangeController) HandleSchedulerEventRaftMuLocked(
 	nextScheduled := scheduled[:0]
 	updateWaiterSets := false
 	for _, rs := range scheduled {
-		scheduleAgain, closedReplica := rs.scheduled(ctx, mode, logSnapshot)
+		scheduleAgain, updateWaiters := rs.scheduledRaftMuLocked(ctx, mode, logSnapshot)
 		if scheduleAgain {
 			nextScheduled = append(nextScheduled, rs)
 		}
-		if closedReplica {
+		if updateWaiters {
 			updateWaiterSets = true
 		}
 	}
@@ -1286,7 +1350,7 @@ func (rc *rangeController) HandleSchedulerEventRaftMuLocked(
 		}()
 	}
 	if updateWaiterSets {
-		rc.updateWaiterSetsRaftMuLocked()
+		rc.updateWaiterSetsRaftMuLocked(ctx)
 	}
 }
 
@@ -1334,7 +1398,7 @@ func (rc *rangeController) HoldsSendTokensRaftMuLocked() bool {
 // Requires replica.raftMu to be held.
 func (rc *rangeController) SetReplicasRaftMuLocked(ctx context.Context, replicas ReplicaSet) error {
 	rc.updateReplicaSetRaftMuLocked(ctx, replicas)
-	rc.updateWaiterSetsRaftMuLocked()
+	rc.updateWaiterSetsRaftMuLocked(ctx)
 	return nil
 }
 
@@ -1351,7 +1415,7 @@ func (rc *rangeController) SetLeaseholderRaftMuLocked(
 		log.VInfof(ctx, 1, "r%v setting range leaseholder replica_id=%v", rc.opts.RangeID, replica)
 	}
 	rc.leaseholder = replica
-	rc.updateWaiterSetsRaftMuLocked()
+	rc.updateWaiterSetsRaftMuLocked(ctx)
 }
 
 // CloseRaftMuLocked closes the range controller.
@@ -1529,7 +1593,7 @@ func (rc *rangeController) updateReplicaSetRaftMuLocked(ctx context.Context, new
 	}
 }
 
-func (rc *rangeController) updateWaiterSetsRaftMuLocked() {
+func (rc *rangeController) updateWaiterSetsRaftMuLocked(ctx context.Context) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
@@ -1588,6 +1652,7 @@ func (rc *rangeController) updateWaiterSetsRaftMuLocked() {
 	rc.mu.nonVoterSet = nonVoterSet
 	close(rc.mu.waiterSetRefreshCh)
 	rc.mu.waiterSetRefreshCh = make(chan struct{})
+	log.Infof(ctx, "updateWaiterSets: %s", rc.DebugStringRaftMuLockedRCLocked())
 }
 
 // scheduleReplica may be called with or without raftMu held.
@@ -2042,7 +2107,7 @@ func (rs *replicaState) handleReadyEntries(
 		// deal with.
 		rs.sendStream.closeLocked(ctx)
 		rs.sendStream = nil
-		transitionedSendQState = rs.desc.IsAnyVoter()
+		transitionedSendQState = true
 	}
 	return transitionedSendQState
 }
@@ -2121,12 +2186,10 @@ func (rs *replicaState) handleReadyState(
 	return shouldWaitChange
 }
 
-// scheduled is only called when rs.sendStream != nil, and on followers.
-//
-// closedReplica => !scheduleAgain.
-func (rs *replicaState) scheduled(
+// scheduledRaftMuLocked is only called when rs.sendStream != nil, and on followers.
+func (rs *replicaState) scheduledRaftMuLocked(
 	ctx context.Context, mode RaftMsgAppMode, logSnapshot RaftLogSnapshot,
-) (scheduleAgain bool, closedReplica bool) {
+) (scheduleAgain bool, updateWaiterSets bool) {
 	if rs.desc.ReplicaID == rs.parent.opts.LocalReplicaID {
 		panic("scheduled called on the leader replica")
 	}
@@ -2148,7 +2211,7 @@ func (rs *replicaState) scheduled(
 	if mode != rss.mu.mode {
 		// Must be switching from MsgAppPull => MsgAppPush.
 		rss.tryHandleModeChangeLocked(ctx, mode, false, false)
-		return
+		return false, false
 	}
 	// 4MB. Don't want to hog the scheduler thread for too long.
 	const MaxBytesToSend kvflowcontrol.Tokens = 4 << 20
@@ -2169,6 +2232,9 @@ func (rs *replicaState) scheduled(
 	// unused tokens for entries not subject to flow control.
 	slice, err := logSnapshot.LogSlice(
 		rss.mu.sendQueue.indexToSend, rss.mu.sendQueue.nextRaftIndex, uint64(bytesToSend))
+	if err != nil {
+		log.Infof(ctx, "LogSlice: %s", err.Error())
+	}
 	var msg raftpb.Message
 	if err == nil {
 		var sent bool
@@ -2176,6 +2242,7 @@ func (rs *replicaState) scheduled(
 			rss.parent.desc.ReplicaID, slice)
 		if !sent {
 			err = errors.Errorf("SendMsgApp could not send for replica %d", rss.parent.desc.ReplicaID)
+			log.Infof(ctx, "%s", err.Error())
 		}
 	}
 	if err != nil {
@@ -2183,13 +2250,13 @@ func (rs *replicaState) scheduled(
 		// deal with.
 		rs.sendStream.closeLocked(ctx)
 		rs.sendStream = nil
-		return false, rs.desc.IsAnyVoter()
+		return false, true
 	}
 	rss.dequeueFromQueueAndSendLocked(ctx, msg)
 	isEmpty := rss.isEmptySendQueueLocked()
 	if isEmpty {
 		rss.stopAttemptingToEmptySendQueueLocked(ctx, false)
-		return false, false
+		return false, true
 	}
 	// Still have a send-queue.
 	watchForTokens :=
@@ -2204,6 +2271,7 @@ func (rs *replicaState) closeSendStream(ctx context.Context) {
 	if log.ExpensiveLogEnabled(ctx, 1) {
 		log.VEventf(ctx, 1, "closing send stream %v for replica %v", rs.stream, rs.desc)
 	}
+	log.Infof(ctx, "closing send stream %v for replica %v", rs.stream, rs.desc)
 	rs.sendStream.mu.Lock()
 	defer rs.sendStream.mu.Unlock()
 
@@ -2370,11 +2438,14 @@ func (rss *replicaSendStream) handleReadyEntriesLocked(
 		slice, err := event.logSnapshot.LogSlice(
 			event.sendingEntries[0].id.index, event.sendingEntries[n-1].id.index+1, math.MaxInt64)
 		if err != nil {
+			log.Infof(ctx, "LogSlice: %s", err.Error())
 			return false, err
 		}
 		msg, sent := rss.parent.parent.opts.RaftInterface.SendMsgAppRaftMuLocked(
 			rss.parent.desc.ReplicaID, slice)
 		if !sent {
+			log.Infof(ctx, "%s", errors.Errorf(
+				"SendMsgApp could not send for replica %d", rss.parent.desc.ReplicaID).Error())
 			return false,
 				errors.Errorf("SendMsgApp could not send for replica %d", rss.parent.desc.ReplicaID)
 		}
