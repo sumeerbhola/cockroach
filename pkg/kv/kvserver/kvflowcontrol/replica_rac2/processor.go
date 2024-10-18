@@ -1027,6 +1027,8 @@ func (p *processorImpl) ProcessPiggybackedAdmittedAtLeaderRaftMuLocked(ctx conte
 		return
 	}
 	if p.leader.rc != nil {
+		// 43692      43692           		for replicaID, state := range updates {
+		// TODO: does this leak?
 		for replicaID, state := range updates {
 			p.leader.rc.AdmitRaftMuLocked(ctx, replicaID, state)
 		}
