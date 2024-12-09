@@ -67,6 +67,7 @@ type testingRCState struct {
 	setTokenCounters     map[kvflowcontrol.Stream]struct{}
 	initialRegularTokens kvflowcontrol.Tokens
 	initialElasticTokens kvflowcontrol.Tokens
+	maxInflightBytes     uint64
 }
 
 func (s *testingRCState) init(t *testing.T, ctx context.Context) {
@@ -353,6 +354,7 @@ func (s *testingRCState) getOrInitRange(
 			EvalWaitMetrics:        s.evalMetrics,
 			RangeControllerMetrics: s.rcMetrics,
 			WaitForEvalConfig:      s.waitForEvalConfig,
+			RaftMaxInflightBytes:   s.maxInflightBytes,
 			ReplicaMutexAsserter:   makeTestMutexAsserter(),
 			Knobs:                  &kvflowcontrol.TestingKnobs{},
 		}
@@ -484,7 +486,8 @@ func (r *testingRCRange) SendMsgAppRaftMuLocked(
 	if !ok {
 		panic("unknown replica")
 	}
-	testR.info.Match = max(msg.Entries[0].Index-1, testR.info.Match)
+	// TODO: can adjust inflight bytes? Why are we updating match?
+	// testR.info.Match = max(msg.Entries[0].Index-1, testR.info.Match)
 	testR.info.Next = msg.Entries[len(msg.Entries)-1].Index + 1
 	r.mu.r.replicaSet[replicaID] = testR
 	return msg, true
@@ -529,6 +532,7 @@ func (r *testingRCRange) admit(ctx context.Context, storeID roachpb.StoreID, av 
 				for _, v := range av.Admitted {
 					// Ensure that Match doesn't lag behind the highest index in the
 					// AdmittedVector.
+					// TODO: can adjust inflightBytes.
 					replica.info.Match = max(replica.info.Match, v)
 				}
 				replicaID = replica.desc.ReplicaID
@@ -694,11 +698,12 @@ func scanReplica(t *testing.T, line string) testingReplica {
 	}
 
 	next := uint64(0)
+	match := uint64(0)
 	// The fourth field is optional, if set it contains the tracker state of the
 	// replica on the leader replica (localReplicaID). The valid states are
 	// Probe, Replicate, and Snapshot.
 	if len(parts) > 3 {
-		require.Equal(t, 5, len(parts))
+		require.LessOrEqual(t, 5, len(parts))
 		parts[3] = strings.TrimSpace(parts[3])
 		require.True(t, strings.HasPrefix(parts[3], "state="))
 		parts[3] = strings.TrimPrefix(strings.TrimSpace(parts[3]), "state=")
@@ -718,6 +723,15 @@ func scanReplica(t *testing.T, line string) testingReplica {
 		nextInt, err := strconv.Atoi(parts[4])
 		require.NoError(t, err)
 		next = uint64(nextInt)
+		if len(parts) > 5 {
+			require.Equal(t, 6, len(parts))
+			parts[5] = strings.TrimSpace(parts[5])
+			require.True(t, strings.HasPrefix(parts[5], "match="))
+			parts[5] = strings.TrimPrefix(strings.TrimSpace(parts[5]), "match=")
+			matchInt, err := strconv.Atoi(parts[5])
+			require.NoError(t, err)
+			match = uint64(matchInt)
+		}
 	}
 
 	return testingReplica{
@@ -727,7 +741,7 @@ func scanReplica(t *testing.T, line string) testingReplica {
 			ReplicaID: roachpb.ReplicaID(replicaID),
 			Type:      replicaType,
 		},
-		info: ReplicaStateInfo{State: state, Next: next},
+		info: ReplicaStateInfo{State: state, Match: match, Next: next},
 	}
 }
 
@@ -1069,6 +1083,13 @@ func TestRangeController(t *testing.T) {
 					require.NoError(t, err)
 					state.initialElasticTokens = kvflowcontrol.Tokens(elasticInit)
 				}
+				var maxInflightBytesString string
+				d.MaybeScanArgs(t, "max_inflight_bytes", &maxInflightBytesString)
+				if maxInflightBytesString != "" {
+					maxInflightBytes, err := humanizeutil.ParseBytes(maxInflightBytesString)
+					require.NoError(t, err)
+					state.maxInflightBytes = uint64(maxInflightBytes)
+				}
 
 				for _, r := range scanRanges(t, d.Input) {
 					state.getOrInitRange(t, r, MsgAppPush)
@@ -1359,7 +1380,8 @@ func TestRangeController(t *testing.T) {
 								// Bump the Next and Index fields for replicas that have
 								// MsgApps being sent to them. The Match index is only updated
 								// if it increases.
-								testR.info.Match = max(msgApp.Entries[0].Index-1, testR.info.Match)
+								// TODO: update inflightBytes. why are we updating match?
+								// testR.info.Match = max(msgApp.Entries[0].Index-1, testR.info.Match)
 								testR.info.Next = msgApp.Entries[len(msgApp.Entries)-1].Index + 1
 								testRC.mu.r.replicaSet[replicaID] = testR
 							} else if testR.desc.ReplicaID == testRC.mu.r.localReplicaID &&
@@ -1368,7 +1390,8 @@ func TestRangeController(t *testing.T) {
 								//
 								// TODO(sumeer): many of the test cases are sending MsgApps to
 								// the leader. Stop doing it.
-								testR.info.Match = max(raftEvent.Entries[0].Index-1, testR.info.Match)
+								// TODO: update inflight bytes. why are we updating match?
+								// testR.info.Match = max(raftEvent.Entries[0].Index-1, testR.info.Match)
 								testR.info.Next = raftEvent.Entries[len(raftEvent.Entries)-1].Index + 1
 								testRC.mu.r.replicaSet[replicaID] = testR
 							}
