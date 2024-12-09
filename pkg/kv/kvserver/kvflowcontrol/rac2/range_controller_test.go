@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -39,6 +40,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
+	"github.com/cockroachdb/errors"
+	"github.com/dustin/go-humanize"
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/stretchr/testify/require"
 )
@@ -234,10 +237,21 @@ func (s *testingRCState) sendStreamString(rangeID roachpb.RangeID) string {
 		rss.mu.Lock()
 		defer rss.mu.Unlock()
 
+		var inflightBytesStr string
+		// NB: inflightBytes is retrieved from the state of replicaSendStream,
+		// while the starting index of inflight (match + 1) is retrieved from
+		// testRepl. If the change in testRepl state has not been communicated to
+		// replicaSendStream, these can look inconsistent, which is completely
+		// explainable. Typically, test code that advances match (via admit)
+		// should also send an empty raft event so that replicaSendStream is aware
+		// of the change in match.
+		if rss.mu.inflightBytes != 0 {
+			inflightBytesStr = fmt.Sprintf(" (%s)", humanize.IBytes(rss.mu.inflightBytes))
+		}
 		fmt.Fprintf(&b,
-			"state=%v closed=%v inflight=[%v,%v) send_queue=[%v,%v) precise_q_size=%v",
+			"state=%v closed=%v inflight=[%v,%v)%s send_queue=[%v,%v) precise_q_size=%v",
 			rss.mu.connectedState, rss.mu.closed,
-			testRepl.info.Match+1, rss.mu.sendQueue.indexToSend,
+			testRepl.info.Match+1, rss.mu.sendQueue.indexToSend, inflightBytesStr,
 			rss.mu.sendQueue.indexToSend,
 			rss.mu.sendQueue.nextRaftIndex, rss.mu.sendQueue.preciseSizeSum)
 		if rss.mu.sendQueue.forceFlushStopIndex.active() {
@@ -372,15 +386,20 @@ func (s *testingRCState) getOrInitRange(
 		s.ranges[r.rangeID] = testRC
 	}
 	s.maybeSetInitialTokens(r)
-	// Send through an empty raft event to trigger creating necessary replica
-	// send streams for the range.
-	event := testRC.makeRaftEventWithReplicasState()
-	event.MsgAppMode = mode
-	func() {
-		testRC.rc.opts.ReplicaMutexAsserter.RaftMu.Lock()
-		defer testRC.rc.opts.ReplicaMutexAsserter.RaftMu.Unlock()
-		require.NoError(t, testRC.rc.HandleRaftEventRaftMuLocked(s.testCtx, event))
-	}()
+	if !ok {
+		// Send through an empty raft event to trigger creating necessary replica
+		// send streams for the range.
+		event := testRC.makeRaftEventWithReplicasState()
+		event.MsgAppMode = mode
+		func() {
+			testRC.rc.opts.ReplicaMutexAsserter.RaftMu.Lock()
+			defer testRC.rc.opts.ReplicaMutexAsserter.RaftMu.Unlock()
+			require.NoError(t, testRC.rc.HandleRaftEventRaftMuLocked(s.testCtx, event))
+		}()
+	}
+	// Else, this is an existing testingRCRange. The caller may want to send an
+	// empty raft event too, to enact some changes.
+
 	return testRC
 }
 
@@ -486,9 +505,7 @@ func (r *testingRCRange) SendMsgAppRaftMuLocked(
 	if !ok {
 		panic("unknown replica")
 	}
-	// TODO: can adjust inflight bytes? Why are we updating match?
-	// testR.info.Match = max(msg.Entries[0].Index-1, testR.info.Match)
-	testR.info.Next = msg.Entries[len(msg.Entries)-1].Index + 1
+	testR = updateNext(r, testR, msg.Entries[len(msg.Entries)-1].Index+1)
 	r.mu.r.replicaSet[replicaID] = testR
 	return msg, true
 }
@@ -532,8 +549,7 @@ func (r *testingRCRange) admit(ctx context.Context, storeID roachpb.StoreID, av 
 				for _, v := range av.Admitted {
 					// Ensure that Match doesn't lag behind the highest index in the
 					// AdmittedVector.
-					// TODO: can adjust inflightBytes.
-					replica.info.Match = max(replica.info.Match, v)
+					replica = tryUpdateMatch(r, replica, v)
 				}
 				replicaID = replica.desc.ReplicaID
 				r.mu.r.replicaSet[replicaID] = replica
@@ -550,6 +566,23 @@ func (r *testingRCRange) admit(ctx context.Context, storeID roachpb.StoreID, av 
 	r.rc.opts.ReplicaMutexAsserter.RaftMu.Lock()
 	defer r.rc.opts.ReplicaMutexAsserter.RaftMu.Unlock()
 	r.rc.AdmitRaftMuLocked(ctx, replicaID, av)
+}
+
+func (r *testingRCRange) updateReplicas(t *testing.T, tr testingRange) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for replicaID, replica := range tr.replicaSet {
+		require.Equal(t, uint64(0), replica.info.InflightBytes)
+		if replica.info.Match+1 < replica.info.Next {
+			entries, err := r.raftLog.Entries(replica.info.Match+1, replica.info.Next, math.MaxUint64)
+			require.NoError(t, err)
+			for i := range entries {
+				replica.info.InflightBytes += uint64(len(entries[i].Data))
+			}
+			tr.replicaSet[replicaID] = replica
+		}
+	}
+	r.mu.r = tr
 }
 
 type testingRange struct {
@@ -600,6 +633,45 @@ const invalidTrackerState = tracker.StateSnapshot + 1
 type testingReplica struct {
 	desc roachpb.ReplicaDescriptor
 	info ReplicaStateInfo
+}
+
+func tryUpdateMatch(r *testingRCRange, replica testingReplica, match uint64) testingReplica {
+	if match <= replica.info.Match {
+		return replica
+	}
+	entries, err := r.raftLog.Entries(replica.info.Match+1, match+1, math.MaxUint64)
+	if err != nil {
+		panic(err)
+	}
+	for i := range entries {
+		entrySize := uint64(len(entries[i].Data))
+		if replica.info.InflightBytes < entrySize {
+			panic(errors.Errorf(
+				"inflight-bytes %d < entrySize %d at index %d", replica.info.InflightBytes, entrySize, i))
+		}
+		replica.info.InflightBytes -= entrySize
+	}
+	replica.info.Match = match
+	return replica
+}
+
+func updateNext(r *testingRCRange, replica testingReplica, next uint64) testingReplica {
+	if next < replica.info.Next {
+		panic(errors.Errorf("next %d < replica.info.Next %d", next, replica.info.Next))
+	}
+	if next == replica.info.Next {
+		return replica
+	}
+	entries, err := r.raftLog.Entries(replica.info.Next, next, math.MaxUint64)
+	if err != nil {
+		panic(err)
+	}
+	for i := range entries {
+		entrySize := uint64(len(entries[i].Data))
+		replica.info.InflightBytes += entrySize
+	}
+	replica.info.Next = next
+	return replica
 }
 
 func scanRanges(t *testing.T, input string) []testingRange {
@@ -1186,11 +1258,7 @@ func TestRangeController(t *testing.T) {
 				}
 				for _, r := range scanRanges(t, d.Input) {
 					testRC := state.getOrInitRange(t, r, mode)
-					func() {
-						testRC.mu.Lock()
-						defer testRC.mu.Unlock()
-						testRC.mu.r = r
-					}()
+					testRC.updateReplicas(t, r)
 					func() {
 						testRC.rc.opts.ReplicaMutexAsserter.RaftMu.Lock()
 						defer testRC.rc.opts.ReplicaMutexAsserter.RaftMu.Unlock()
@@ -1377,12 +1445,9 @@ func TestRangeController(t *testing.T) {
 							// Else MsgAppPull mode, so raftEvent.MsgApps is unpopulated.
 
 							if len(msgApp.Entries) > 0 {
-								// Bump the Next and Index fields for replicas that have
-								// MsgApps being sent to them. The Match index is only updated
-								// if it increases.
-								// TODO: update inflightBytes. why are we updating match?
-								// testR.info.Match = max(msgApp.Entries[0].Index-1, testR.info.Match)
-								testR.info.Next = msgApp.Entries[len(msgApp.Entries)-1].Index + 1
+								// Bump the Next field for replicas that have MsgApps being
+								// sent to them.
+								testR = updateNext(testRC, testR, msgApp.Entries[len(msgApp.Entries)-1].Index+1)
 								testRC.mu.r.replicaSet[replicaID] = testR
 							} else if testR.desc.ReplicaID == testRC.mu.r.localReplicaID &&
 								len(raftEvent.Entries) > 0 {
@@ -1390,9 +1455,8 @@ func TestRangeController(t *testing.T) {
 								//
 								// TODO(sumeer): many of the test cases are sending MsgApps to
 								// the leader. Stop doing it.
-								// TODO: update inflight bytes. why are we updating match?
-								// testR.info.Match = max(raftEvent.Entries[0].Index-1, testR.info.Match)
-								testR.info.Next = raftEvent.Entries[len(raftEvent.Entries)-1].Index + 1
+								testR = updateNext(
+									testRC, testR, raftEvent.Entries[len(raftEvent.Entries)-1].Index+1)
 								testRC.mu.r.replicaSet[replicaID] = testR
 							}
 						}
