@@ -917,7 +917,7 @@ func TestMultiTenantUncontrolledCPUTokenSim(t *testing.T) {
 	const workInitialTokens = 100
 	const workUsageTokens = workInitialTokens
 	const workDuration = workInitialTokens
-	const numSmallTenants = 4
+	const numSmallTenants = 2
 	type waitingWork struct {
 		startWait int
 	}
@@ -943,7 +943,7 @@ func TestMultiTenantUncontrolledCPUTokenSim(t *testing.T) {
 	simulateIntervalMillis := 12 * 1000
 	lastTotalTokensUsed := 0
 	lastTokens := burstTokens
-	const printPerTick = false
+	const printPerTick = true
 	for i := 0; i <= simulateIntervalMillis; i++ {
 		// Pop work that finished
 		{
@@ -1116,7 +1116,7 @@ func TestMultiTenantUncontrolledCPUTokenSim(t *testing.T) {
 				}
 			}
 		}
-		if i%100 == 0 {
+		if i%20 == 0 {
 			// Add a work unit for small tenants.
 			for tenant := range smallTenantWaiting {
 				haveTenantTokens := tenantTokensNanos[tenant] > 0
@@ -1451,6 +1451,35 @@ wait times: 0:842.03ms 1:847.69ms 2:853.40ms 3:859.11ms 4:864.83ms 5:870.59ms 6:
 
 NB: using 85% in the above. The only reason tenant 20 is > 0.05 is because of the initial burst,
 and the simulation time being only 12s.
+
+With 1 small tenant trying to consume 5000 tokens
+rate 17.33
+tenant fractions: 0:0.29 1:0.71
+wait times: 0:2.93ms
+
+The first scheme achieves
+12000: uncontrolledTokens: 7000, excessTokens: 0, tenantBurstTokens: 11000, tokens: 0
+12000: delta tenant burst tokens: 0
+12000: delta tokens used: 16000
+rate 17.76
+tenant fractions: 0:0.28 1:0.72
+wait times: 0:0.00ms
+
+With 2 small tenants each trying to consume 5000 tokens
+rate 17.33
+tenant fractions: 0:0.29 1:0.29 2:0.42
+wait times: 0:2.93ms 1:8.60ms
+
+The first scheme achieves
+12000: uncontrolledTokens: 10000, excessTokens: 0, tenantBurstTokens: 6000, tokens: 0
+12000: delta tenant burst tokens: 0
+12000: delta tokens used: 16000
+rate 18.18
+tenant fractions: 0:0.28 1:0.28 2:0.45
+wait times: 0:0.00ms 1:0.00ms
+
+The first scheme does this by allowing a lot of uncontrolled tokens which is not
+good for goroutine scheduling latency.
 */
 func TestMultiTenantUncontrolled3CPUTokenSim(t *testing.T) {
 	// 16ms of tokens per tick, represent 80%. want 20% consumed by tenant 0, 1,
@@ -1468,7 +1497,7 @@ func TestMultiTenantUncontrolled3CPUTokenSim(t *testing.T) {
 	// wrong.
 	const workUsageTokens = workInitialTokens
 	const workDuration = workInitialTokens
-	const numSmallTenants = 20
+	const numSmallTenants = 2
 	type waitingWork struct {
 		startWait int
 	}
@@ -1614,7 +1643,8 @@ func TestMultiTenantUncontrolled3CPUTokenSim(t *testing.T) {
 		if tokens80 > 0 {
 			panic("tokens80 > 0")
 		}
-		if i%100 == 0 {
+		// TODO: this is what makes a small tenant consume 5000 tokens.
+		if i%20 == 0 {
 			// Add a work unit for small tenants.
 			for tenant := range smallTenantWaiting {
 				qualifiesForTokens85 := tenantTokensNanos[tenant] > (3*tenantBurstTokensNanos)/4
