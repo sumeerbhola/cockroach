@@ -3122,6 +3122,10 @@ message AdmissionHeader {
   // already been accounted for, and can start reserving more only when it
   // exceeds.
   bool no_memory_reserved_at_source = 5;
+
+  // OverrideTenantID, when non-zero, is used by the system tenant to behave
+  // as a different tenant for the purposes of admission control.
+  TenantID override_tenant_id = 6 [(gogoproto.customname) = "OverrideTenantID", (gogoproto.nullable) = false];
 }
 
 // A BatchRequest contains one or more requests to be executed in
