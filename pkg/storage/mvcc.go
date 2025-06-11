@@ -533,12 +533,15 @@ func updateStatsOnMerge(key roachpb.Key, valSize, nowNanos int64) enginepb.MVCCS
 // versioned value's key & value bytes. If the value is not a
 // deletion tombstone, updates the live stat counters as well.
 // If this value is an intent, updates the intent counters.
+//
+// Typical callers will set addStatsForNewValue=true.
 func updateStatsOnPut(
 	key roachpb.Key,
 	prevIsValue bool,
 	prevValSize int64,
 	origMetaKeySize, origMetaValSize, metaKeySize, metaValSize int64,
 	orig, meta *enginepb.MVCCMetadata,
+	addStatsForNewValue bool,
 ) enginepb.MVCCStats {
 	var ms enginepb.MVCCStats
 
@@ -556,6 +559,9 @@ func updateStatsOnPut(
 				ms.SysBytes -= orig.KeyBytes + orig.ValBytes
 			}
 			ms.SysCount--
+		}
+		if !addStatsForNewValue {
+			return ms
 		}
 		ms.SysBytes += meta.KeyBytes + meta.ValBytes + metaKeySize + metaValSize
 		ms.SysCount++
@@ -672,6 +678,9 @@ func updateStatsOnPut(
 		ms.AgeTo(meta.Timestamp.WallTime)
 	}
 
+	if !addStatsForNewValue {
+		return ms
+	}
 	// If the new version isn't a deletion tombstone, add it to live counters.
 	if !meta.Deleted {
 		ms.LiveBytes += meta.KeyBytes + meta.ValBytes + metaKeySize + metaValSize
@@ -1691,6 +1700,21 @@ func mvccGetMetadata(
 	if !unsafeKey.Key.Equal(metaKey.Key) {
 		return false, 0, 0, hlc.Timestamp{}, nil
 	}
+	return mvccGetMetadataWithPositionedIter(iter, metaKey, unsafeKey, meta)
+}
+
+// mvccGetMetadataWithPositionedIter is a helper for mvccGetMetadata, and can
+// also be called standalone in places that have an already positioned iter.
+// metaKey is a (safe wrt iter positioning) key representing MVCCMetadata
+// (i.e., the Timestamp field is empty), and unsafeKey is the key that the
+// iterator is currently positioned on, such that unsafeKey.Key is equal too
+// metaKey.Key.
+//
+// See the function comment for mvccGetMetadata for the behavior of this
+// function.
+func mvccGetMetadataWithPositionedIter(
+	iter MVCCIterator, metaKey MVCCKey, unsafeKey MVCCKey, meta *enginepb.MVCCMetadata,
+) (ok bool, keyBytes, valBytes int64, realKeyChanged hlc.Timestamp, err error) {
 	hasPoint, hasRange := iter.HasPointAndRange()
 
 	// Check for existing intent metadata. Intents will be emitted colocated with
@@ -1745,9 +1769,14 @@ func mvccGetMetadata(
 	// metadata), or the point version's timestamp if it was a tombstone.
 	if hasRange {
 		rangeKeys := iter.RangeKeys()
+		// TODO(sumeer): why "AtOrAbove" and not strictly Above? Presumably, we
+		// are relying on the fact that the two timestamps can never be equal, so
+		// AtOrAbove will only find something that is strictly above.
 		if v, ok := rangeKeys.FirstAtOrAbove(unsafeKey.Timestamp); ok {
 			meta.Deleted = true
 			meta.Timestamp = rangeKeys.Versions[0].Timestamp.ToLegacyTimestamp()
+			// TODO(sumeer): why is meta.Timestamp equal to the latest version, but
+			// keyLastSeen set to the oldest version that is above the point key.
 			keyLastSeen := v.Timestamp
 			if isTombstone {
 				keyLastSeen = unsafeKey.Timestamp
@@ -1762,6 +1791,74 @@ func mvccGetMetadata(
 	meta.Timestamp = unsafeKey.Timestamp.ToLegacyTimestamp()
 
 	return true, int64(mvccencoding.EncodedMVCCKeyPrefixLength(metaKey.Key)), 0, unsafeKey.Timestamp, nil
+}
+
+// statsForNonTxnMVCCPoihtPut updates the MVCCStats when a non-transactional
+// MVCC value is being added. The new value is represented by newKey,
+// newValLen, newValLenIsTombstone. There is an existing point or range key at
+// this roachpb.Key (metaKey.Key), and the engine iterator is positioned at
+// that key (iterUnsafeKey). The caller must have already checked that
+// iterUnsafeKey has a timestamp smaller than newKey.Timestamp.
+//
+// The stats in ms are assumed to already include stats for the new value. If
+// the caller is adding multiple points at the same roachpb.Key, newKey,
+// newValLen, newValIsTombstone, should represent the oldest value that is
+// being added, since that is the one that is potentially obsoleting the
+// newest version in the engine.
+func statsForNonTxnMVCCPointPut(
+	iter MVCCIterator,
+	metaKey MVCCKey,
+	iterUnsafeKey MVCCKey,
+	newKey MVCCKey,
+	newValLen int64,
+	newValIsTombstone bool,
+	ms *enginepb.MVCCStats,
+	scratchMeta1 *enginepb.MVCCMetadata,
+	scratchMeta2 *enginepb.MVCCMetadata,
+) error {
+	origMeta := scratchMeta1
+	ok, origMetaKeySize, origMetaValSize, origRealKeyChanged, err :=
+		mvccGetMetadataWithPositionedIter(iter, metaKey, iterUnsafeKey, origMeta)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.AssertionFailedf("ok should be true")
+	}
+	// Adjust the stats metadata for MVCC range tombstones. The MVCC stats
+	// update only cares about changes to real point keys.
+	//
+	// Specifically, if a real point key was covered by a range tombstone, we
+	// must set origMeta.Timestamp to the timestamp where the real point key was
+	// deleted (either by the point itself, if it was a tombstone, or the lowest
+	// range tombstone). If there was no real point key, origMeta must be nil.
+	// In all other cases, origMeta.Timestamp will already equal
+	// origRealKeyChanged.
+	if origRealKeyChanged.IsEmpty() {
+		origMeta = nil // no real point key was found
+		origMetaKeySize = 0
+		origMetaValSize = 0
+	} else {
+		origMeta.Timestamp = origRealKeyChanged.ToLegacyTimestamp()
+	}
+	newMetaKeySize := int64(metaKey.EncodedSize())
+	newMetaValSize := int64(0) // Not writing an intent.
+	newMeta := scratchMeta2
+	newMeta.Reset()
+	newMeta.Timestamp = newKey.Timestamp.ToLegacyTimestamp()
+	// NB: the following 3 fields in newMeta will not really be used by
+	// updateStatsOnPut since we will pass addStatsForNewValue=false, but we
+	// populate them anyway to avoid complicating the contract for
+	// updateStatsOnPut.
+	newMeta.KeyBytes = MVCCVersionTimestampSize
+	newMeta.ValBytes = newValLen
+	newMeta.Deleted = newValIsTombstone
+	ms.Add(updateStatsOnPut(
+		// We are not rewriting our own intent, so prevIsValue is false.
+		metaKey.Key, false /* prevIsValue */, 0, /* prevValSize */
+		origMetaKeySize, origMetaValSize,
+		newMetaKeySize, newMetaValSize, origMeta, newMeta, false))
+	return nil
 }
 
 // putBuffer holds pointer data needed by mvccPutInternal. Bundling
@@ -2798,7 +2895,7 @@ func mvccPutInternal(
 			meta.Timestamp = origRealKeyChanged.ToLegacyTimestamp()
 		}
 		opts.Stats.Add(updateStatsOnPut(key, prevIsValue, prevValSize, origMetaKeySize, origMetaValSize,
-			metaKeySize, metaValSize, meta, newMeta))
+			metaKeySize, metaValSize, meta, newMeta, true))
 	}
 
 	// Log the logical MVCC operation.
