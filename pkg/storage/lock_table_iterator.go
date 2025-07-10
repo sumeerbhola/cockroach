@@ -8,6 +8,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"runtime/pprof"
 	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -127,6 +128,19 @@ func NewLockTableIterator(
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
+	// Alternatively, we could use storage.userKeyCategories, that are passed to
+	// Pebble, and enhance Pebble to use them during iteration. That is a more
+	// involved change since it requires changing the context based on the first
+	// seek (which is when the iterator will discover which key space it is
+	// being used for). This is a simpler change for now. NB: unlike pprof.Do,
+	// the labels are not inherited by any goroutines spawned by the iterator,
+	// but we know there are none. It is also non-trivial to fiddle with the
+	// goroutine labels since calls into the iterator are fine-grained, and we
+	// don't pass the context in each call (the context provided to
+	// NewEngineIterator is used for the lifetime of the iterator).
+	//
+	// TOOD(sumeer): replace with using storage.userKeyCategories.
+	ctx = pprof.WithLabels(ctx, pprof.Labels("key-type", "lock"))
 	iter, err := reader.NewEngineIterator(ctx, opts.toIterOptions())
 	if err != nil {
 		return nil, err
