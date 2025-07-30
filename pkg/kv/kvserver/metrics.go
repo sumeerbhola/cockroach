@@ -31,9 +31,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/sstable/block"
 	"github.com/cockroachdb/pebble/vfs"
+	"github.com/cockroachdb/redact"
+	"github.com/dustin/go-humanize"
 )
 
 func init() {
@@ -3237,6 +3240,63 @@ type StoreMetrics struct {
 	DiskWriteMaxBytesPerSecond *metric.Gauge
 	DiskReadMaxIOPS            *metric.Gauge
 	DiskWriteMaxIOPS           *metric.Gauge
+
+	cld cacheLevelDeltaMetricsLogging
+}
+
+type cacheLevelDeltaMetricsLogging struct {
+	mu       syncutil.Mutex
+	lastTime time.Time
+	last     pebble.CacheMetrics
+}
+
+func (cld *cacheLevelDeltaMetricsLogging) updateAndLog(cur pebble.CacheMetrics) {
+	cld.mu.Lock()
+	defer cld.mu.Unlock()
+	if cld.lastTime.IsZero() {
+		cld.lastTime = timeutil.Now()
+		cld.last = cur
+		return
+	}
+	// log.Infof(context.Background(), "CacheMetrics.updateAndLog")
+	now := timeutil.Now()
+	dur := now.Sub(cld.lastTime)
+	if dur < 55*time.Second {
+		return
+	}
+	cld.lastTime = now
+	var b strings.Builder
+	var delta pebble.CacheMetrics
+	delta.Hits = cur.Hits - cld.last.Hits
+	delta.Misses = cur.Misses - cld.last.Misses
+	sum := delta.Hits + delta.Misses
+	levelsSum := int64(0)
+	for i := range cur.LevelsMetrics {
+		delta.LevelsMetrics[i].Hits = cur.LevelsMetrics[i].Hits - cld.last.LevelsMetrics[i].Hits
+		delta.LevelsMetrics[i].Misses = cur.LevelsMetrics[i].Misses - cld.last.LevelsMetrics[i].Misses
+		levelsSum += delta.LevelsMetrics[i].Hits + delta.LevelsMetrics[i].Misses
+	}
+	cld.last = cur
+	if sum == 0 {
+		log.Infof(context.Background(), "CacheMetrics %s: no hits or misses", dur)
+		return
+	}
+	accounted := float64(levelsSum) / float64(sum)
+	for i := range cur.LevelsMetrics {
+		levelSum := delta.LevelsMetrics[i].Hits + delta.LevelsMetrics[i].Misses
+		if levelSum == 0 {
+			continue
+		}
+		levelFrac := float64(levelSum) / float64(levelsSum)
+		missRate := float64(delta.LevelsMetrics[i].Misses) / float64(levelSum)
+		fmt.Fprintf(&b, "L%d: frac=%.3f miss=%.4f ", i, levelFrac, missRate)
+	}
+	log.Infof(context.Background(), "CacheMetrics %s: sum=%s(miss=%.4f accounted=%.2f %s",
+		dur,
+		redact.SafeString(humanize.SIWithDigits(float64(sum), 4, "")),
+		float64(delta.Misses)/float64(sum),
+		accounted,
+		redact.SafeString(b.String()))
 }
 
 // TenantsStorageMetrics are metrics which are aggregated over all tenants
@@ -4081,6 +4141,7 @@ func (sm *TenantsStorageMetrics) subtractMVCCStats(
 }
 
 func (sm *StoreMetrics) updateEngineMetrics(m storage.Metrics) {
+	sm.cld.updateAndLog(m.Metrics.BlockCache)
 	sm.RdbBlockCacheHits.Update(m.BlockCache.Hits)
 	sm.RdbBlockCacheMisses.Update(m.BlockCache.Misses)
 	sm.RdbBlockCacheUsage.Update(m.BlockCache.Size)
