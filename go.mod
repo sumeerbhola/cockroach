@@ -516,4 +516,4 @@ replace github.com/snowflakedb/gosnowflake => github.com/cockroachdb/gosnowflake
 
 replace github.com/knz/strtime => github.com/cockroachdb/strtime v0.0.0-20250401230151-b9140bbb29b5
 
-replace github.com/cockroachdb/pebble => github.com/sumeerbhola/pebble v0.0.0-20250730152714-7492ca6a5a5e
+replace github.com/cockroachdb/pebble => github.com/sumeerbhola/pebble v0.0.0-20250730181647-4c80b0e06e66

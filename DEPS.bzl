@@ -1835,10 +1835,9 @@ def go_deps():
         patches = [
             "@com_github_cockroachdb_cockroach//build/patches:com_github_cockroachdb_pebble.patch",
         ],
-        replace = "github.com/sumeerbhola/pebble",
-        # TODO: mirror this repo (to fix, run `./dev generate bazel --mirror`)
-        sum = "h1:EswZkzu3QSEs/f0bMHkSBiEkI6PyISUXi61WAvUT0CM=",
-        version = "v0.0.0-20250730152714-7492ca6a5a5e",
+        vcs = "git",
+        remote = "https://github.com/sumeerbhola/pebble",  # Custom fork.
+        commit = "4c80b0e06e66231b70b1fd96ea4a0ab1d2955a46",  # Custom commit.
     )
     go_repository(
         name = "com_github_cockroachdb_redact",

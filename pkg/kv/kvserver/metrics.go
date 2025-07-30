@@ -3272,9 +3272,11 @@ func (cld *cacheLevelDeltaMetricsLogging) updateAndLog(cur pebble.CacheMetrics) 
 	sum := delta.Hits + delta.Misses
 	levelsSum := int64(0)
 	for i := range cur.LevelsMetrics {
-		delta.LevelsMetrics[i].Hits = cur.LevelsMetrics[i].Hits - cld.last.LevelsMetrics[i].Hits
-		delta.LevelsMetrics[i].Misses = cur.LevelsMetrics[i].Misses - cld.last.LevelsMetrics[i].Misses
-		levelsSum += delta.LevelsMetrics[i].Hits + delta.LevelsMetrics[i].Misses
+		for j := range cur.LevelsMetrics[i] {
+			delta.LevelsMetrics[i][j].Hits = cur.LevelsMetrics[i][j].Hits - cld.last.LevelsMetrics[i][j].Hits
+			delta.LevelsMetrics[i][j].Misses = cur.LevelsMetrics[i][j].Misses - cld.last.LevelsMetrics[i][j].Misses
+			levelsSum += delta.LevelsMetrics[i][j].Hits + delta.LevelsMetrics[i][j].Misses
+		}
 	}
 	cld.last = cur
 	if sum == 0 {
@@ -3282,16 +3284,37 @@ func (cld *cacheLevelDeltaMetricsLogging) updateAndLog(cur pebble.CacheMetrics) 
 		return
 	}
 	accounted := float64(levelsSum) / float64(sum)
-	for i := range cur.LevelsMetrics {
-		levelSum := delta.LevelsMetrics[i].Hits + delta.LevelsMetrics[i].Misses
+	for i := range delta.LevelsMetrics {
+		var levelSum int64
+		var levelMisses int64
+		for j := range delta.LevelsMetrics[i] {
+			levelSum += delta.LevelsMetrics[i][j].Hits + delta.LevelsMetrics[i][j].Misses
+			levelMisses += delta.LevelsMetrics[i][j].Misses
+		}
 		if levelSum == 0 {
 			continue
 		}
 		levelFrac := float64(levelSum) / float64(levelsSum)
-		missRate := float64(delta.LevelsMetrics[i].Misses) / float64(levelSum)
-		fmt.Fprintf(&b, "L%d: frac=%.3f miss=%.4f ", i, levelFrac, missRate)
+		missRate := float64(levelMisses) / float64(levelSum)
+		fmt.Fprintf(&b, "\nL%d: frac=%.3f miss=%.3f (kind,frac,miss)", i, levelFrac, missRate)
+		first := true
+		for j := range delta.LevelsMetrics[i] {
+			s := delta.LevelsMetrics[i][j].Misses + delta.LevelsMetrics[i][j].Hits
+			if s == 0 {
+				continue
+			}
+			missFrac := float64(delta.LevelsMetrics[i][j].Misses) / float64(s)
+			frac := float64(s) / float64(levelSum)
+			var prefix string
+			if !first {
+				prefix = " "
+			}
+			first = false
+			fmt.Fprintf(&b, "%s(k%d,%.2f,%.3f)", redact.SafeString(prefix), j, frac, missFrac)
+		}
+		fmt.Fprintf(&b, ")")
 	}
-	log.Infof(context.Background(), "CacheMetrics %s: sum=%s(miss=%.4f accounted=%.2f %s",
+	log.Infof(context.Background(), "CacheMetrics %s: sum=%s miss=%.3f accounted=%.2f%s",
 		dur,
 		redact.SafeString(humanize.SIWithDigits(float64(sum), 4, "")),
 		float64(delta.Misses)/float64(sum),
