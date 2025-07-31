@@ -90,6 +90,7 @@ type kv struct {
 	targetCompressionRatio               float64
 	enum                                 bool
 	keySize                              int
+	sharedKeyPrefixSize                  int
 	insertCount                          int
 	txnQoS                               string
 	prepareReadOnly                      bool
@@ -179,6 +180,8 @@ var kvMeta = workload.Meta{
 		RandomSeed.AddFlag(&g.flags)
 		g.flags.IntVar(&g.keySize, `key-size`, 0,
 			`Use string key of appropriate size instead of int`)
+		g.flags.IntVar(&g.sharedKeyPrefixSize, `shared-key-prefix-size`, 0, ``)
+
 		g.flags.DurationVar(&g.sfuDelay, `sfu-wait-delay`, 10*time.Millisecond,
 			`Delay after SFU when using --sfu-writes (or after SELECT 1 when using --sel1-writes).`)
 		g.flags.StringVar(&g.txnQoS, `txn-qos`, `regular`,
@@ -259,6 +262,12 @@ func (w *kv) validateConfig() (err error) {
 	if w.keySize != 0 && w.keySize < minStringKeyDigits {
 		return errors.Errorf("key size must be >= %d to fit integer part, requested %d",
 			minStringKeyDigits, w.keySize)
+	}
+	if w.sharedKeyPrefixSize != 0 {
+		if w.keySize-w.sharedKeyPrefixSize < minStringKeyDigits {
+			return errors.Errorf("key size minus shared prefix must be >= %d to fit integer part, requested %d",
+				minStringKeyDigits, w.keySize-w.sharedKeyPrefixSize)
+		}
 	}
 	if w.writeSeq != "" {
 		first := w.writeSeq[0]
@@ -348,9 +357,14 @@ func (w *kv) createKeyGenerator() (func() keyGenerator, *sequence, keyTransforme
 		return gen, seq, intKeyTransformer{}, kr
 	}
 
+	var sharedPrefix string
+	if w.sharedKeyPrefixSize > 0 {
+		sharedPrefix = randutil.RandString(randutil.NewTestRandWithSeed(0), w.sharedKeyPrefixSize, randutil.PrintableKeyAlphabet)
+	}
 	return gen, seq, stringKeyTransformer{
-		startOffset: kr.min,
-		fillerSize:  w.keySize - minStringKeyDigits,
+		startOffset:  kr.min,
+		fillerSize:   w.keySize - w.sharedKeyPrefixSize - minStringKeyDigits,
+		sharedPrefix: sharedPrefix,
 	}, kr
 }
 
@@ -837,8 +851,9 @@ const minStringKeyDigits = 20
 // length. Note that filler is number of extra bytes on top of 20 digits and
 // the the key size parameter as passed to workload.
 type stringKeyTransformer struct {
-	fillerSize  int
-	startOffset int64
+	fillerSize   int
+	startOffset  int64
+	sharedPrefix string
 }
 
 func (s stringKeyTransformer) getKey(i int64) interface{} {
@@ -850,8 +865,8 @@ func (s stringKeyTransformer) getKeyInternal(i int64) string {
 	var bigKey big.Int
 	bigKey.Sub(big.NewInt(i), big.NewInt(s.startOffset))
 	strKey := bigKey.String()
-	prefix := strings.Repeat("0", minStringKeyDigits-len(strKey))
-	return fmt.Sprintf("%s%s%s", prefix, strKey, filler)
+	prefixZeros := strings.Repeat("0", minStringKeyDigits-len(strKey))
+	return fmt.Sprintf("%s%s%s%s", s.sharedPrefix, prefixZeros, strKey, filler)
 }
 
 func (s stringKeyTransformer) keySQLType() string {
@@ -909,6 +924,10 @@ func (g *hashGenerator) hash(v int64) int64 {
 }
 
 func (g *hashGenerator) writeKey() int64 {
+	k := g.seq.write()
+	if k%100000 == 0 {
+		fmt.Printf("hashGenerator writeKey %d\n", k)
+	}
 	return g.hash(g.seq.write())
 }
 
