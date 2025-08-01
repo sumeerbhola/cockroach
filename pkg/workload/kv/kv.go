@@ -57,6 +57,13 @@ const (
 
 var RandomSeed = workload.NewInt64RandomSeed()
 
+func init() {
+	// Hack.
+	v := int64(4522557012402489404)
+	fmt.Printf("Replacing RandomSeed with %d\n", v)
+	RandomSeed.Set(v)
+}
+
 type keyRange struct {
 	min, max int64
 }
@@ -554,11 +561,13 @@ func (w *kv) Ops(
 	gen, _, kt, _ := w.createKeyGenerator()
 	ql := workload.QueryLoad{}
 	var numEmptyResults atomic.Int64
+	var numResults atomic.Int64
 	for i := 0; i < w.connFlags.Concurrency; i++ {
 		op := &kvOp{
 			config:          w,
 			hists:           reg.GetHandle(),
 			numEmptyResults: &numEmptyResults,
+			numResults:      &numResults,
 		}
 		op.readStmt = op.sr.Define(readStmtStr)
 		op.followerReadStmt = op.sr.Define(followerReadStmtStr)
@@ -606,6 +615,7 @@ type kvOp struct {
 	g                keyGenerator
 	t                keyTransformer
 	numEmptyResults  *atomic.Int64
+	numResults       *atomic.Int64
 }
 
 func (o *kvOp) run(ctx context.Context) (retErr error) {
@@ -643,8 +653,13 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 		for rows.Next() {
 			empty = false
 		}
+		totalReads := o.numResults.Add(1)
 		if empty {
-			o.numEmptyResults.Add(1)
+			emptyReads := o.numEmptyResults.Add(1)
+			if emptyReads%1_000_000 == 0 {
+				fmt.Printf("Number of empty reads: %d, total reads: %d frac: %.2f\n", emptyReads,
+					totalReads, float64(emptyReads)/float64(totalReads))
+			}
 		}
 		elapsed := timeutil.Since(start)
 		o.hists.Get(opName).Record(elapsed)
