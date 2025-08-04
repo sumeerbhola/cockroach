@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 )
@@ -152,7 +153,7 @@ type Controller interface {
 	AdmitKVWork(context.Context, roachpb.TenantID, *kvpb.BatchRequest) (Handle, error)
 	// AdmittedKVWorkDone is called after the admitted KV work is done
 	// executing.
-	AdmittedKVWorkDone(Handle, *StoreWriteBytes)
+	AdmittedKVWorkDone(context.Context, Handle, *StoreWriteBytes)
 	// AdmitRangefeedRequest must be called before serving rangefeed requests.
 	// If enabled, it returns a non-nil Pacer that's to be used within rangefeed
 	// catchup scans (typically CPU-intensive and affecting scheduling
@@ -228,7 +229,9 @@ type Handle struct {
 	raftAdmissionMeta    *kvflowcontrolpb.RaftAdmissionMeta
 
 	callAdmittedWorkDoneOnKVAdmissionQ bool
-	cpuStart                           time.Duration
+	// Used for measuring post-admission CPU, even for cases that were not
+	// subject to admission control.
+	cpuStart time.Duration
 }
 
 // AnnotateCtx annotates the given context with request-scoped admission
@@ -273,6 +276,7 @@ func (n *controllerImpl) AdmitKVWork(
 ) (handle Handle, retErr error) {
 	ah := Handle{tenantID: tenantID}
 	if n.kvAdmissionQ == nil {
+		ah.cpuStart = grunning.Time()
 		return ah, nil
 	}
 
@@ -429,31 +433,35 @@ func (n *controllerImpl) AdmitKVWork(
 			if err != nil {
 				return Handle{}, err
 			}
-			if callAdmittedWorkDoneOnKVAdmissionQ {
-				// We include the time to do other activities like intent resolution,
-				// since it is acceptable to charge them to the tenant.
-				ah.cpuStart = grunning.Time()
-			}
 			ah.callAdmittedWorkDoneOnKVAdmissionQ = callAdmittedWorkDoneOnKVAdmissionQ
 		}
 	}
+	// We include the time to do other activities like intent resolution,
+	// since it is acceptable to charge them to the tenant.
+	ah.cpuStart = grunning.Time()
 	return ah, nil
 }
 
 // AdmittedKVWorkDone implements the Controller interface.
-func (n *controllerImpl) AdmittedKVWorkDone(ah Handle, writeBytes *StoreWriteBytes) {
+func (n *controllerImpl) AdmittedKVWorkDone(
+	ctx context.Context, ah Handle, writeBytes *StoreWriteBytes,
+) {
+	cpuTime := grunning.Time() - ah.cpuStart
+	if cpuTime < 0 {
+		// We sometimes see cpuTime to be negative. We use 1ns here, arbitrarily.
+		// This issue is tracked by
+		// https://github.com/cockroachdb/cockroach/issues/126681.
+		if buildutil.CrdbTestBuild {
+			log.Warningf(context.Background(), "grunning.Time() should be non-decreasing, cpuTime=%s", cpuTime)
+		}
+		cpuTime = 1
+	}
+	if span := tracing.SpanFromContext(ctx); span != nil {
+		// TODO:
+		// span.RecordStructured(someProto{CPUTime: cpuTime})
+	}
 	n.elasticCPUGrantCoordinator.ElasticCPUWorkQueue.AdmittedWorkDone(ah.elasticCPUWorkHandle)
 	if ah.callAdmittedWorkDoneOnKVAdmissionQ {
-		cpuTime := grunning.Time() - ah.cpuStart
-		if cpuTime < 0 {
-			// We sometimes see cpuTime to be negative. We use 1ns here, arbitrarily.
-			// This issue is tracked by
-			// https://github.com/cockroachdb/cockroach/issues/126681.
-			if buildutil.CrdbTestBuild {
-				log.Warningf(context.Background(), "grunning.Time() should be non-decreasing, cpuTime=%s", cpuTime)
-			}
-			cpuTime = 1
-		}
 		n.kvAdmissionQ.AdmittedWorkDone(ah.tenantID, cpuTime)
 	}
 	if ah.storeAdmissionQ != nil {
