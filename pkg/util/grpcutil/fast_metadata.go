@@ -53,6 +53,15 @@ func ClearIncomingContextExcept(ctx context.Context, keys ...string) context.Con
 	return metadata.NewIncomingContext(ctx, newMD)
 }
 
+// ClearOutgoingContext "removes" the gRPC outgoing metadata if there's any
+// already. No-op if there was no metadata to start with.
+func ClearOutgoingContext(ctx context.Context) context.Context {
+	if ctx.Value(grpcOutgoingKeyObj) != nil {
+		return metadata.NewOutgoingContext(ctx, nil)
+	}
+	return ctx
+}
+
 // FastFirstValueFromIncomingContext is a specialization of
 // metadata.ValueFromIncomingContext() which extracts the first string
 // from the given metadata key, if it exists. No extra objects are
@@ -104,6 +113,18 @@ var grpcIncomingKeyObj = func() interface{} {
 	}
 	return f.recordedKey
 }()
+
+// grpcOutgoingKeyObj is a copy of a value with the Go type
+// `metadata.mdOutgoingKey{}` (from the grpc metadata package). We use the
+// same trick as above to "steal" it.
+var grpcOutgoingKeyObj = func() interface{} {
+	var f fakeContext
+	_, _ = metadata.FromOutgoingContext(&f)
+	if f.recordedKey == nil {
+		panic("ValueFromOutgoingContext did not request a key")
+	}
+	return f.recordedKey
+}
 
 type fakeContext struct {
 	recordedKey interface{}
