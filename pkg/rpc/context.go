@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 	"io"
 	"math"
@@ -470,6 +471,27 @@ func (c ContextOptions) validate() error {
 }
 
 // NewContext creates an rpc.Context with the supplied values.
+//
+// Called once when starting up something that will act as an RPC client e.g. NewServer, makeTenantSQLServerArgs, to construct
+// an RPC context that will be used for all calls.
+//
+// When !opts.TenantID.IsSystem(), it initializes a clientCreds field that is
+// used to inject an RPC metadata header with key "client-tid" and value equal
+// to the tenant ID (see rpc/auth.go for details). This ensures all outgoing
+// RPCs from that tenant correctly identify that originating tenant, when
+// running with shared-process multitenancy.
+//
+// When opts.TenantID.IsSystem(), the clientCreds field is left nil.
+// Typically, the system tenant wants to behave as itself, for which this
+// suffices. In some cases, the system tenant wants to dynamically behave as
+// a different tenant on a per RPC call basis.
+// do
+//
+// If the And that made sense, for the
+// existing use cases in that we didn't need the KV server to switch roles on
+// a per RPC basis. That is, the current system adds the client tenant to the
+// context on the RPC server path, but does not pluck it out to use it as a
+// client of RPCs.
 func NewContext(ctx context.Context, opts ContextOptions) *Context {
 	if err := opts.validate(); err != nil {
 		panic(err)
@@ -585,6 +607,7 @@ func NewContext(ctx context.Context, opts ContextOptions) *Context {
 	}
 
 	if !opts.TenantID.IsSystem() {
+		// This is how we are injecting on the outgoing real RPCs.
 		rpcCtx.clientCreds = newTenantClientCreds(opts.TenantID)
 	}
 
@@ -668,6 +691,19 @@ func (rpcCtx *Context) GetLocalInternalClientForAddr(
 	return nil
 }
 
+// ContextForSystemTenantToActAsTenant ... This overwrites any previously
+// appended metadata, which is fine since the caller is at a higher layer than
+// other code that fiddles with metadata.
+//
+// TODO(sumeer): this may only work for gRPC, and not for DRPC.
+func ContextForSystemTenantToActAsTenant(
+	ctx context.Context, tenantID roachpb.TenantID,
+) context.Context {
+	md := metadata.Pairs(clientTIDMetadataHeaderKey, fmt.Sprint(tenantID))
+	ctx = metadata.NewOutgoingContext(ctx, md)
+	return ctx
+}
+
 // internalClientAdapter is an implementation of kvpb.InternalClient that
 // bypasses gRPC, calling the wrapped local server directly.
 //
@@ -708,6 +744,9 @@ var _ RestrictedInternalClient = internalClientAdapter{}
 // The caller can set separateTracers to indicate that the
 // caller and callee use separate tracers, so we can't
 // use a child tracing span directly.
+//
+// One of these is constructed for each client on the same server, so the
+// clientTenantID is used to inject the tenant using NewLocalRequestContext.
 func makeInternalClientAdapter(
 	server kvpb.InternalServer,
 	clientTenantID roachpb.TenantID,
@@ -784,6 +823,10 @@ func makeInternalClientAdapter(
 			// ends up performing another RPC to the local node. The inner RPC must
 			// carry the identity of the system tenant, not the one of the client of
 			// the outer RPC.
+			//
+			// If we want a deliberate override, we need to extract that before this
+			// and substitute the clientTenandID. But should only permit if clientTenantID
+			// is roachpb.SystemTenantID.
 			ctx = grpcutil.NewLocalRequestContext(ctx, clientTenantID)
 
 			// Clear any leftover gRPC incoming metadata, if this call

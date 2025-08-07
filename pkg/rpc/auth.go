@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
@@ -439,6 +440,15 @@ func checkRootOrNodeInScope(clientCert *x509.Certificate, serverTenantID roachpb
 // tenant ID is still present when the call is received at (c).
 // However, we don't want the API handler at (c) to see it any more.
 // So we need to remove it.
+//
+// The above is the accidental case. What about the deliberate case? Should we
+// add another key to the context to ensure that the deliberate case is
+// indicated, and here we substitute that key? No: we don't need to do
+// anything here for the deliberate case. The deliberate case needs to ensure
+// that the authnResult will reflect it.
+//
+// We also need the deliberate case to set the gRPC metadata header,
+// "client-tenant" when sending remotely. Where does that happen?
 func contextForRequest(ctx context.Context, authnRes authnResult) context.Context {
 	switch ar := authnRes.(type) {
 	case authnSuccessPeerIsTenantServer:
@@ -503,6 +513,7 @@ func tenantIDFromRPCMetadata(ctx context.Context) (roachpb.TenantID, error) {
 func (tcc *tenantClientCred) GetRequestMetadata(
 	ctx context.Context, uri ...string,
 ) (map[string]string, error) {
+	var a metadata.Pairs
 	return tcc.md, nil
 }
 
