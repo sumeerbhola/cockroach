@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -363,7 +364,7 @@ func (b *RequestBatcher) sendBatch(ctx context.Context, ba *batch) {
 			if !tenantID.IsSet() {
 				tenantID = roachpb.SystemTenantID
 			}
-			ctx = roachpb.ContextWithClientTenant(ctx, tenantID)
+			ctx = rpc.ContextForSystemTenantToActAsTenant(ctx, tenantID)
 
 			batchRequest = ba.batchRequest(&b.cfg)
 			var pErr *kvpb.Error
@@ -677,6 +678,9 @@ func (b *batch) tenantID() (id roachpb.TenantID, err error) {
 		panic("tenantID cannot be called on an empty batch")
 	}
 	r := b.reqs[0]
+	// TODO: should probably use keys.Addr to convert to RKey. Also, the batcher
+	// may be getting used for non-addressable keys, so need to handle that
+	// error.
 	_, id, err = keys.DecodeTenantPrefix(r.req.Header().Key)
 	return
 }

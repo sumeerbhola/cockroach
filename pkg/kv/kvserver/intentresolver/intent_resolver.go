@@ -20,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -1098,7 +1099,7 @@ func (ir *IntentResolver) resolveIntents(
 		if !tenID.IsSet() {
 			tenID = roachpb.SystemTenantID
 		}
-		ctx = roachpb.ContextWithClientTenant(ctx, tenID)
+		ctx = rpc.ContextForSystemTenantToActAsTenant(ctx, tenID)
 
 		if err := ir.db.Run(ctx, b); err != nil {
 			return b.MustPErr()

@@ -694,6 +694,9 @@ func (rpcCtx *Context) GetLocalInternalClientForAddr(
 func ContextForSystemTenantToActAsTenant(
 	ctx context.Context, tenantID roachpb.TenantID,
 ) context.Context {
+	if tenantID.IsSystem() {
+		return ctx
+	}
 	log.Infof(ctx, "TenantOverride: ContextForSystemTenantToActAsTenant %s", tenantID)
 	md := metadata.Pairs(clientTIDMetadataHeaderKey, fmt.Sprint(tenantID))
 	ctx = metadata.NewOutgoingContext(ctx, md)
