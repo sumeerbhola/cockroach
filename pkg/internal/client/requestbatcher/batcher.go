@@ -364,7 +364,7 @@ func (b *RequestBatcher) sendBatch(ctx context.Context, ba *batch) {
 			if !tenantID.IsSet() {
 				tenantID = roachpb.SystemTenantID
 			}
-			ctx = rpc.ContextForSystemTenantToActAsTenant(ctx, tenantID)
+			_ = rpc.ContextForSystemTenantToActAsTenant(ctx, tenantID)
 
 			batchRequest = ba.batchRequest(&b.cfg)
 			var pErr *kvpb.Error

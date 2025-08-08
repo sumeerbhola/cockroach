@@ -214,12 +214,14 @@ func (a kvAuth) authenticate(ctx context.Context) (authnResult, error) {
 		var err error
 		ar, err = a.authenticateLocalRequest(ctx, clientTenantID)
 		if err != nil {
+			log.Infof(ctx, "AUTH FAILED: local request %v", err)
 			return nil, err
 		}
 	} else {
 		var err error
 		ar, err = a.authenticateNetworkRequest(ctx)
 		if err != nil {
+			log.Infof(ctx, "AUTH FAILED: network request %v", err)
 			return nil, err
 		}
 	}

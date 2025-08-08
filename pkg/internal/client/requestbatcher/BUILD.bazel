@@ -10,6 +10,7 @@ go_library(
         "//pkg/kv",
         "//pkg/kv/kvpb",
         "//pkg/roachpb",
+        "//pkg/rpc",
         "//pkg/util/admission/admissionpb",
         "//pkg/util/buildutil",
         "//pkg/util/log",

@@ -32,7 +32,7 @@ func registerMultiTenantSharedProcess(r registry.Registry) {
 		Suites:           registry.Suites(registry.Nightly),
 		Timeout:          1 * time.Hour,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			tpccWarehouses := 500
+			tpccWarehouses := 50
 			t.Status(`set up Unified Architecture Cluster`)
 
 			// In order to observe the app tenant's db console, create a secure

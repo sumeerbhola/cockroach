@@ -1824,6 +1824,30 @@ func (n *Node) Batch(ctx context.Context, args *kvpb.BatchRequest) (*kvpb.BatchR
 		// We had this tag before the ResetAndAnnotateCtx() call above.
 		ctx = logtags.AddTag(ctx, "tenant", tenantID)
 	}
+	{
+		srcLocation := args.AdmissionHeader.SourceLocation
+		isIntentResolution := false
+		for _, union := range args.Requests {
+			inner := union.GetInner()
+			switch inner.(type) {
+			case *kvpb.ResolveIntentRequest, *kvpb.ResolveIntentRangeRequest:
+				isIntentResolution = true
+			}
+			if isIntentResolution {
+				break
+			}
+		}
+		if isIntentResolution {
+			if tenantID.IsSystem() {
+				log.Infof(
+					ctx, "Node.Batch: No override for intent resolution from src %v", srcLocation)
+			} else {
+				log.Infof(
+					ctx, "Node.Batch: Overrride to tenant %v for intent resolution from src %v",
+					tenantID, srcLocation.String())
+			}
+		}
+	}
 
 	// If the node is collecting a CPU profile with labels, and the sender has set
 	// pprof labels in the BatchRequest, then we apply them to the context that is

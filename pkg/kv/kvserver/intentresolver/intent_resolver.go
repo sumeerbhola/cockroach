@@ -1099,7 +1099,7 @@ func (ir *IntentResolver) resolveIntents(
 		if !tenID.IsSet() {
 			tenID = roachpb.SystemTenantID
 		}
-		ctx = rpc.ContextForSystemTenantToActAsTenant(ctx, tenID)
+		_ = rpc.ContextForSystemTenantToActAsTenant(ctx, tenID)
 
 		if err := ir.db.Run(ctx, b); err != nil {
 			return b.MustPErr()
