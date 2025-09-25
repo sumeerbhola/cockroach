@@ -553,7 +553,9 @@ func (o *RangeCountScorerOptions) balanceScore(
 // rebalance a replica away from a store or not, we want to give it a "boost"
 // (i.e. make it a less likely candidate for removal) if it doesn't further our
 // goal to converge range count towards the mean.
-func (o *RangeCountScorerOptions) rebalanceFromConvergesScore(eqClass equivalenceClass) (result int) {
+func (o *RangeCountScorerOptions) rebalanceFromConvergesScore(
+	eqClass equivalenceClass,
+) (result int) {
 	defer func() {
 		log.Infof(context.Background(), "rebalanceFromConvergesScore: rangeCount=%d, mean=%.2f, result=%d",
 			eqClass.existing.Capacity.RangeCount, eqClass.candidateSL.CandidateRanges.Mean, result)
@@ -1822,11 +1824,14 @@ func rankedCandidateListForRebalancing(
 		for i := range bestCands {
 			bestStores[i] = bestCands[i].store
 		}
+		// TODO: remove from bestCands based on MMA conflicts.
 		eqClass := equivalenceClass{
 			existing:    existing.store,
 			candidateSL: storepool.MakeStoreList(bestStores),
 			candidates:  bestCands,
 		}
+		// TODO: call options.shouldRebalanceBasedOnThresholds and if true,
+		// append to equivalenceClasses.
 		equivalenceClasses = append(equivalenceClasses, eqClass)
 	}
 
@@ -1837,16 +1842,19 @@ func rankedCandidateListForRebalancing(
 	needRebalance := needRebalanceFrom || needRebalanceTo
 	var shouldRebalanceCheck bool
 	if !needRebalance {
-		for _, eqClass := range equivalenceClasses {
-			if options.shouldRebalanceBasedOnThresholds(
-				ctx,
-				eqClass,
-				metrics,
-			) {
-				shouldRebalanceCheck = true
-				break
+		shouldRebalanceCheck = len(equivalenceClasses) > 0
+		/*
+			for _, eqClass := range equivalenceClasses {
+				if options.shouldRebalanceBasedOnThresholds(
+					ctx,
+					eqClass,
+					metrics,
+				) {
+					shouldRebalanceCheck = true
+					break
+				}
 			}
-		}
+		*/
 	}
 
 	if !needRebalance && !shouldRebalanceCheck {
@@ -1890,18 +1898,20 @@ func rankedCandidateListForRebalancing(
 			// conflict with MMA's goal early. We should consider following the same
 			// pattern as overloaded by adding a field to candidate and filter out in
 			// the end
-			if options.isInConflictWithMMA(existing.store.StoreID, cand.store.StoreID, comparable.candidateSL) {
-				log.Infof(ctx, "filtered cand: fulldisk=%t, iooverloaded=%t, balance=%v, convergence=%v, rangecount=%v", !options.getDiskOptions().rebalanceToMaxCapacityCheck(cand.store),
-					!options.getIOOverloadOptions().rebalanceReplicaToCheck(
-						ctx,
-						cand.store,
-						// We only wish to compare the IO overload to the
-						// comparable stores average and not the cluster.
-						comparable.candidateSL,
-					), options.balanceScore(comparable.candidateSL, cand.store.Capacity), options.rebalanceToConvergesScore(comparable, cand.store),
-					options.adjustRangeCountForScoring(int(cand.store.Capacity.RangeCount)))
-				continue
-			}
+			/*
+				if options.isInConflictWithMMA(existing.store.StoreID, cand.store.StoreID, comparable.candidateSL) {
+					log.Infof(ctx, "filtered cand: fulldisk=%t, iooverloaded=%t, balance=%v, convergence=%v, rangecount=%v", !options.getDiskOptions().rebalanceToMaxCapacityCheck(cand.store),
+						!options.getIOOverloadOptions().rebalanceReplicaToCheck(
+							ctx,
+							cand.store,
+							// We only wish to compare the IO overload to the
+							// comparable stores average and not the cluster.
+							comparable.candidateSL,
+						), options.balanceScore(comparable.candidateSL, cand.store.Capacity), options.rebalanceToConvergesScore(comparable, cand.store),
+						options.adjustRangeCountForScoring(int(cand.store.Capacity.RangeCount)))
+					continue
+				}
+			*/
 			// We already computed valid, necessary, fullDisk, and diversityScore
 			// above, but recompute fullDisk using special rebalanceTo logic for
 			// rebalance candidates.
