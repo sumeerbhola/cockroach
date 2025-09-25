@@ -1973,6 +1973,13 @@ func bestRebalanceTarget(
 	bestIdx := -1
 	var bestTarget *candidate
 	var replaces candidate
+	// This loop starts from the same options slice every time
+	// bestRebalanceTarget is called. If the caller calls MMA with the returned
+	// target t1 and MMA disallows target t1, the caller will call
+	// bestRebalanceTarget again. Since t1 has been removed, we can examine the
+	// same rebalanceOptions again and possibly return t2, which may be much
+	// worse than t1. It will be better than existing of course, because of
+	// betterRebalanceTarget, but it is insufficient to eliminate the thrashing.
 	for i, option := range options {
 		if len(option.candidates) == 0 {
 			continue
