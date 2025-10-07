@@ -932,7 +932,12 @@ func (p *processorImpl) AdmitRaftEntriesRaftMuLocked(ctx context.Context, e rac2
 			if raftPri != priBits {
 				panic(errors.AssertionFailedf("inconsistent priorities %s, %s", raftPri, priBits))
 			}
+			opri := raftPri
 			raftPri = p.follower.lowPriOverrideState.getEffectivePriority(entry.Index, raftPri)
+			if raftPri == raftpb.LowPri && admissionpb.HackLogger != nil {
+				admissionpb.HackLogger("effective low pri (original %s): term %d, index %d", opri.String(),
+					entry.Term, entry.Index)
+			}
 		} else {
 			raftPri = raftpb.LowPri
 			if admissionpb.WorkClassFromPri(admissionpb.WorkPriority(meta.AdmissionPriority)) ==

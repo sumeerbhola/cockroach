@@ -100,7 +100,7 @@ const syncInterval = 30
 // This metric's default should ideally match its sister metrics: one in the
 // storage engine, set by COCKROACH_ENGINE_MAX_SYNC_DURATION_DEFAULT and the
 // storage.max_sync_duration cluster setting, and another in `ExitTimeoutForFatalLog`.
-var maxSyncDuration = envutil.EnvOrDefaultDuration("COCKROACH_LOG_MAX_SYNC_DURATION", 20*time.Second)
+var maxSyncDuration = envutil.EnvOrDefaultDuration("COCKROACH_LOG_MAX_SYNC_DURATION", 2000*time.Second)
 
 // syncWarnDuration is the threshold after which a slow disk warning is written
 // to the log and to stderr.

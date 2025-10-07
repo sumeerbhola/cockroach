@@ -247,6 +247,8 @@ func (w WorkClass) SafeFormat(p redact.SafePrinter, verb rune) {
 
 var _ tracing.AggregatorEvent = &AdmissionWorkQueueStats{}
 
+var HackLogger func(format string, args ...any)
+
 // Identity implements the tracing.AggregatorEvent interface.
 func (s *AdmissionWorkQueueStats) Identity() tracing.AggregatorEvent {
 	return &AdmissionWorkQueueStats{WorkPriority: int32(HighPri)}

@@ -2623,6 +2623,7 @@ func (rs *replicaState) scheduledRaftMuLocked(
 	// 4MB. Don't want to hog the scheduler thread for too long.
 	const MaxBytesToSend kvflowcontrol.Tokens = 4 << 20
 	bytesToSend := MaxBytesToSend
+	bytesToSend = 300
 	if !rss.mu.sendQueue.forceFlushStopIndex.active() &&
 		rss.mu.sendQueue.deductedForSchedulerTokens < bytesToSend {
 		bytesToSend = rss.mu.sendQueue.deductedForSchedulerTokens
@@ -2871,6 +2872,9 @@ func (rss *replicaSendStream) handleReadyEntriesRaftMuAndStreamLocked(
 			}
 			if entry.id.index >= rss.mu.sendQueue.indexToSend {
 				// Being added to the send-queue.
+				if admissionpb.HackLogger != nil {
+					admissionpb.HackLogger("rss: adding to send-q %d %d", entry.id.index, entry.id.term)
+				}
 				inSendQueue = true
 				if event.mode == MsgAppPush {
 					// NB: we may deduct regular eval tokens, but raft's own flow
@@ -3016,7 +3020,13 @@ func (rss *replicaSendStream) dequeueFromQueueAndSendRaftMuAndStreamLocked(
 	var tokensNeeded kvflowcontrol.Tokens
 	var approximatedNumEntries int
 	var approximatedNumActualTokens kvflowcontrol.Tokens
+	if admissionpb.HackLogger != nil {
+		admissionpb.HackLogger("dequeuing from send-q %d entries", len(msg.Entries))
+	}
 	for _, entry := range msg.Entries {
+		if admissionpb.HackLogger != nil {
+			admissionpb.HackLogger("dequeueing entry %d %d", entry.Index, entry.Term)
+		}
 		entryState := getEntryFCStateOrFatal(ctx, entry)
 		if entryState.id.index != rss.mu.sendQueue.indexToSend {
 			panic(errors.AssertionFailedf("index %d != indexToSend %d",

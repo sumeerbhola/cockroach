@@ -1997,6 +1997,10 @@ func (q *StoreWorkQueue) Admit(
 		info.CreateTime = q.sequenceReplicatedWork(info.CreateTime, info.ReplicatedWorkInfo)
 	}
 
+	if wc == admissionpb.ElasticWorkClass && admissionpb.HackLogger != nil {
+		admissionpb.HackLogger("adding to elastic WorkQueue: %d, %d",
+			info.ReplicatedWorkInfo.LogPosition.Term, info.ReplicatedWorkInfo.LogPosition.Index)
+	}
 	enabled, err := q.q[wc].Admit(ctx, info.WorkInfo)
 	if err != nil {
 		return StoreWorkHandle{}, err

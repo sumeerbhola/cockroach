@@ -745,6 +745,10 @@ func (r *Replica) stepRaftGroupRaftMuLocked(req *kvserverpb.RaftMessageRequest) 
 		return false /* unquiesceAndWakeLeader */, err
 	})
 	if sideChannelInfo != (replica_rac2.SideChannelInfoUsingRaftMessageRequest{}) {
+		if admissionpb.HackLogger != nil && sideChannelInfo.LowPriOverride {
+			admissionpb.HackLogger("side channel term %d [%d,%d] %t",
+				sideChannelInfo.LeaderTerm, sideChannelInfo.First, sideChannelInfo.Last, sideChannelInfo.LowPriOverride)
+		}
 		r.flowControlV2.SideChannelForPriorityOverrideAtFollowerRaftMuLocked(sideChannelInfo)
 	}
 	if admittedVector.Term != 0 {
