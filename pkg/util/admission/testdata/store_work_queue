@@ -136,7 +136,7 @@ elastic workqueue: closed epoch: 0 tenantHeap len: 0
 stats:{workCount:14 writeAccountedBytes:3000 ingestedAccountedBytes:2001000 statsToIgnore:{ingestStats:{Bytes:0 ApproxIngestedIntoL0Bytes:0 MemtableOverlappingFiles:0} writeBytes:0} aboveRaftStats:{workCount:4 writeAccountedBytes:2000 ingestedAccountedBytes:1001000} aux:{bypassedCount:10 writeBypassedAccountedBytes:1000 ingestedBypassedAccountedBytes:1000000}}
 estimates:{writeTokens:10000}
 
-stats-to-ignore ingested-bytes=12000 ingested-into-L0-bytes=9000 write-bytes=1500
+stats-to-ignore ingested-bytes=12000 ingested-into-L0-bytes=9000 write-bytes-raw=1500 write-bytes-as-sstable=500
 ----
 regular workqueue: closed epoch: 0 tenantHeap len: 0
  tenant-id: 53 used: 50101, w: 1, fifo: -128

@@ -181,10 +181,12 @@ type Controller interface {
 	// the periodic polling.
 	SetTenantWeightProvider(TenantWeightProvider, *stop.Stopper)
 	// SnapshotIngestedOrWritten informs admission control about a range
-	// snapshot ingestion or a range snapshot written as a normal write.
-	// writeBytes should roughly correspond to the size of the write when
-	// flushed to a sstable.
-	SnapshotIngestedOrWritten(_ roachpb.StoreID, _ pebble.IngestOperationStats, writeBytes uint64)
+	// snapshot ingestion or a range snapshot written as a normal write. For the
+	// normal write, writeBytesRaw should represent the size of the write as a
+	// batch, and writeBytesAsSSTable should roughly represent the size of the
+	// write when it will be flushed into a sstable.
+	SnapshotIngestedOrWritten(
+		_ roachpb.StoreID, _ pebble.IngestOperationStats, writeBytesRaw, writeBytesAsSSTable uint64)
 	// FollowerStoreWriteBytes informs admission control about writes
 	// replicated to a raft follower, that have not been subject to admission
 	// control.
@@ -524,13 +526,21 @@ func (n *controllerImpl) SetTenantWeightProvider(
 
 // SnapshotIngestedOrWritten implements the Controller interface.
 func (n *controllerImpl) SnapshotIngestedOrWritten(
-	storeID roachpb.StoreID, ingestStats pebble.IngestOperationStats, writeBytes uint64,
+	storeID roachpb.StoreID,
+	ingestStats pebble.IngestOperationStats,
+	writeBytesRaw uint64,
+	writeBytesAsSSTable uint64,
 ) {
 	storeAdmissionQ := n.storeGrantCoords.TryGetQueueForStore(storeID)
 	if storeAdmissionQ == nil {
 		return
 	}
-	storeAdmissionQ.StatsToIgnore(ingestStats, writeBytes)
+	storeAdmissionQ.StatsToIgnore(ingestStats,
+		admission.WriteBytesToIgnoreStat{
+			RawBytes:       writeBytesRaw,
+			BytesAsSSTable: writeBytesAsSSTable,
+		},
+	)
 }
 
 // FollowerStoreWriteBytes implements the Controller interface.

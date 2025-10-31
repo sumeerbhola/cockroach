@@ -2189,14 +2189,30 @@ func (q *StoreWorkQueue) BypassedWorkDone(workCount int64, doneInfo StoreWorkDon
 	q.ioTokensBypassed.Inc(additionalTokensTaken)
 }
 
+// WriteBytesToIgnoreStat represents ignored bytes (only incoming range
+// snapshot), that were not written as ingested sstables. We conveniently
+// maintain both the RawBytes (pre-compression), and the BytesAsSSTable which
+// represents the rough size after these are turned into sstables (by Pebble).
+type WriteBytesToIgnoreStat struct {
+	RawBytes       uint64
+	BytesAsSSTable uint64
+}
+
+func (s *WriteBytesToIgnoreStat) add(other WriteBytesToIgnoreStat) {
+	s.RawBytes += other.RawBytes
+	s.BytesAsSSTable += other.BytesAsSSTable
+}
+
 // StatsToIgnore is called for range snapshot ingestion -- see the comment in
 // storeAdmissionStats.
-func (q *StoreWorkQueue) StatsToIgnore(ingestStats pebble.IngestOperationStats, writeBytes uint64) {
+func (q *StoreWorkQueue) StatsToIgnore(
+	ingestStats pebble.IngestOperationStats, writeBytes WriteBytesToIgnoreStat,
+) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.mu.stats.statsToIgnore.ingestStats.Bytes += ingestStats.Bytes
 	q.mu.stats.statsToIgnore.ingestStats.ApproxIngestedIntoL0Bytes += ingestStats.ApproxIngestedIntoL0Bytes
-	q.mu.stats.statsToIgnore.writeBytes += writeBytes
+	q.mu.stats.statsToIgnore.writeBytes.add(writeBytes)
 }
 
 func (q *StoreWorkQueue) updateStoreStatsAfterWorkDone(

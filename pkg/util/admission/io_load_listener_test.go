@@ -375,7 +375,8 @@ func TestBadIOLoadListenerStats(t *testing.T) {
 		req.stats.ingestedAccountedBytes = rand.Uint64()
 		req.stats.statsToIgnore.ingestStats.Bytes = rand.Uint64()
 		req.stats.statsToIgnore.ingestStats.ApproxIngestedIntoL0Bytes = rand.Uint64()
-		req.stats.statsToIgnore.writeBytes = rand.Uint64()
+		req.stats.statsToIgnore.writeBytes.RawBytes = rand.Uint64()
+		req.stats.statsToIgnore.writeBytes.BytesAsSSTable = rand.Uint64()
 	}
 	kvGranter := &testGranterNonNegativeTokens{t: t}
 	st := cluster.MakeTestingClusterSettings()
@@ -474,13 +475,16 @@ func (g *testGranterWithIOTokens) getDiskTokensUsedAndReset() (
 }
 
 func (g *testGranterWithIOTokens) setLinearModels(
-	l0WriteLM tokensLinearModel,
+	writeToWALLM tokensLinearModel,
+	walToL0LM tokensLinearModel,
 	l0IngestLM tokensLinearModel,
 	ingestLM tokensLinearModel,
 	writeAmpLM tokensLinearModel,
 ) {
-	fmt.Fprintf(&g.buf, "setAdmittedDoneModelsLocked: l0-write-lm: ")
-	printLinearModel(&g.buf, l0WriteLM)
+	fmt.Fprintf(&g.buf, "setAdmittedDoneModelsLocked: write-to-wal-lm: ")
+	printLinearModel(&g.buf, writeToWALLM)
+	fmt.Fprintf(&g.buf, " wal-to-l0-lm: ")
+	printLinearModel(&g.buf, walToL0LM)
 	fmt.Fprintf(&g.buf, " l0-ingest-lm: ")
 	printLinearModel(&g.buf, l0IngestLM)
 	fmt.Fprintf(&g.buf, " ingest-lm: ")
@@ -529,13 +533,16 @@ func (g *testGranterNonNegativeTokens) getDiskTokensUsedAndReset() (
 }
 
 func (g *testGranterNonNegativeTokens) setLinearModels(
-	l0WriteLM tokensLinearModel,
+	writeToWALLM tokensLinearModel,
+	walToL0LM tokensLinearModel,
 	l0IngestLM tokensLinearModel,
 	ingestLM tokensLinearModel,
 	writeAmpLM tokensLinearModel,
 ) {
-	require.LessOrEqual(g.t, 0.5, l0WriteLM.multiplier)
-	require.LessOrEqual(g.t, int64(0), l0WriteLM.constant)
+	require.LessOrEqual(g.t, 0.5, writeToWALLM.multiplier)
+	require.LessOrEqual(g.t, int64(0), writeToWALLM.constant)
+	require.Less(g.t, 0.0, walToL0LM.multiplier)
+	require.LessOrEqual(g.t, int64(0), walToL0LM.constant)
 	require.Less(g.t, 0.0, l0IngestLM.multiplier)
 	require.LessOrEqual(g.t, int64(0), l0IngestLM.constant)
 	require.LessOrEqual(g.t, 0.5, ingestLM.multiplier)

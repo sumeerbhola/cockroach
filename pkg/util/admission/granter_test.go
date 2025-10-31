@@ -281,7 +281,7 @@ func TestStoreGranterBasic(t *testing.T) {
 			tlm := tokensLinearModel{multiplier: 0.5, constant: 50}
 			// Use w-amp of 1 for the purpose of this test.
 			wamplm := tokensLinearModel{multiplier: 1, constant: 0}
-			kvStoreGranter.setLinearModels(tlm, tlm, tlm, wamplm)
+			kvStoreGranter.setLinearModels(tlm, tlm, tlm, tlm, wamplm)
 			return flushAndReset()
 
 		case "set-has-waiting-requests":

@@ -1498,10 +1498,11 @@ func TestConvertFilesToBatchAndCommit(t *testing.T) {
 	require.NoError(t, w2.Finish())
 	w2.Close()
 
-	require.NoError(t, engs[batchEngine].ConvertFilesToBatchAndCommit(
+	_, err = engs[batchEngine].ConvertFilesToBatchAndCommit(
 		ctx, []string{fileName1, fileName2}, []roachpb.Span{
 			{Key: lkStart, EndKey: lkEnd}, {Key: startKey, EndKey: endKey},
-		}))
+		})
+	require.NoError(t, err)
 	require.NoError(t, engs[ingestEngine].IngestLocalFiles(ctx, []string{fileName1, fileName2}))
 	outputState := func(eng Engine) []string {
 		it, err := eng.NewEngineIterator(context.Background(), IterOptions{

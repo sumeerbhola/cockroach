@@ -312,7 +312,7 @@ type granterWithIOTokens interface {
 	// granter. This asymmetry is due to the need to use all the functionality
 	// of WorkQueue at admission time. See the long explanatory comment at the
 	// beginning of store_token_estimation.go, regarding token estimation.
-	setLinearModels(l0WriteLM, l0IngestLM, ingestLM, writeAmpLM tokensLinearModel)
+	setLinearModels(writeToWALLM, walToL0LM, l0IngestLM, ingestLM, writeAmpLM tokensLinearModel)
 }
 
 // granterWithStoreReplicatedWorkAdmitted is used to abstract
@@ -563,7 +563,7 @@ type storeAdmissionStats struct {
 		ingestStats pebble.IngestOperationStats
 		// Stats for regular writes. These roughly correspond to what the writes
 		// will turn into when written to a flushed sstable.
-		writeBytes uint64
+		writeBytes WriteBytesToIgnoreStat
 	}
 	// aboveRaftStats is a subset of the top-level storeAdmissionStats that
 	// represents admission that happened above-raft for which we deducted

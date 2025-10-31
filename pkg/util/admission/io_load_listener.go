@@ -542,7 +542,8 @@ func (io *ioLoadListener) pebbleMetricsTick(ctx context.Context, metrics StoreMe
 		sas := io.kvRequester.getStoreAdmissionStats()
 		cumIngestBytes := cumLSMIngestedBytes(metrics.Metrics)
 		io.perWorkTokenEstimator.updateEstimates(
-			metrics.Levels[0], cumIngestBytes, metrics.DiskStats.BytesWritten, sas, false)
+			metrics.Levels[0], metrics.WAL.BytesWritten, cumIngestBytes, metrics.DiskStats.BytesWritten,
+			sas, false)
 		io.adjustTokensResult = adjustTokensResult{
 			ioLoadListenerState: ioLoadListenerState{
 				cumL0AddedBytes:              m.Levels[0].TablesFlushed.Bytes + m.Levels[0].BlobBytesFlushed + m.Levels[0].TablesIngested.Bytes,
@@ -765,13 +766,14 @@ func (io *ioLoadListener) adjustTokens(ctx context.Context, metrics StoreMetrics
 	io.diskBW.bytesWritten = metrics.DiskStats.BytesWritten
 
 	io.perWorkTokenEstimator.updateEstimates(
-		metrics.Levels[0], cumIngestedBytes, metrics.DiskStats.BytesWritten, sas,
-		io.aux.recentUnflushedMemTableTooLarge)
+		metrics.Levels[0], metrics.WAL.BytesWritten, cumIngestedBytes, metrics.DiskStats.BytesWritten,
+		sas, io.aux.recentUnflushedMemTableTooLarge)
 	io.copyAuxEtcFromPerWorkEstimator()
 	requestEstimates := io.perWorkTokenEstimator.getStoreRequestEstimatesAtAdmission()
 	io.kvRequester.setStoreRequestEstimates(requestEstimates)
-	l0WriteLM, l0IngestLM, ingestLM, writeAmpLM := io.perWorkTokenEstimator.getModelsAtDone()
-	io.kvGranter.setLinearModels(l0WriteLM, l0IngestLM, ingestLM, writeAmpLM)
+	writeToWALLM, walToL0LM, l0IngestLM, ingestLM, writeAmpLM :=
+		io.perWorkTokenEstimator.getModelsAtDone()
+	io.kvGranter.setLinearModels(writeToWALLM, walToL0LM, l0IngestLM, ingestLM, writeAmpLM)
 	// NB: we also log if prevDoLogFlush is true, since we often see a single
 	// interval of no overload sandwiched between intervals of overload and we
 	// want to know what happened in that interval.
@@ -790,8 +792,10 @@ func (io *ioLoadListener) copyAuxEtcFromPerWorkEstimator() {
 	io.adjustTokensResult.aux.perWorkTokensAux = io.perWorkTokenEstimator.aux
 	requestEstimates := io.perWorkTokenEstimator.getStoreRequestEstimatesAtAdmission()
 	io.adjustTokensResult.requestEstimates = requestEstimates
-	l0WriteLM, l0IngestLM, ingestLM, writeAmpLM := io.perWorkTokenEstimator.getModelsAtDone()
-	io.adjustTokensResult.l0WriteLM = l0WriteLM
+	writeToWALLM, walToL0LM, l0IngestLM, ingestLM, writeAmpLM :=
+		io.perWorkTokenEstimator.getModelsAtDone()
+	io.adjustTokensResult.writeToWALLM = writeToWALLM
+	io.adjustTokensResult.walToL0LM = walToL0LM
 	io.adjustTokensResult.l0IngestLM = l0IngestLM
 	io.adjustTokensResult.ingestLM = ingestLM
 	io.adjustTokensResult.writeAmpLM = writeAmpLM
@@ -1308,7 +1312,8 @@ func (io *ioLoadListener) adjustTokensInner(
 type adjustTokensResult struct {
 	ioLoadListenerState
 	requestEstimates storeRequestEstimates
-	l0WriteLM        tokensLinearModel
+	writeToWALLM     tokensLinearModel
+	walToL0LM        tokensLinearModel
 	l0IngestLM       tokensLinearModel
 	ingestLM         tokensLinearModel
 	writeAmpLM       tokensLinearModel
@@ -1324,13 +1329,15 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 	if res.aux.recentUnflushedMemTableTooLarge {
 		recentFlushBackogStr = " (flush-backlog) "
 	}
-	p.Printf("L0 growth %s%s (write %s (ignored %s) ingest %s (ignored %s)): ",
+	p.Printf("L0 growth %s%s (write %s (ignored %s) ingest %s (ignored %s)) WAL (write %s (ignored %s)): ",
 		ib(res.aux.intL0AddedBytes),
 		redact.SafeString(recentFlushBackogStr),
 		ib(res.aux.perWorkTokensAux.intL0WriteBytes),
 		ib(res.aux.perWorkTokensAux.intL0IgnoredWriteBytes),
 		ib(res.aux.perWorkTokensAux.intL0IngestedBytes),
-		ib(res.aux.perWorkTokensAux.intL0IgnoredIngestedBytes))
+		ib(res.aux.perWorkTokensAux.intL0IgnoredIngestedBytes),
+		ib(res.aux.perWorkTokensAux.intWALWriteBytes),
+		ib(res.aux.perWorkTokensAux.intWALIgnoredWriteBytes))
 	// Writes to L0 that we expected because requests told admission control.
 	// This is the "easy path", from an estimation perspective, if all regular
 	// writes accurately tell us what they write, and all ingests tell us what
@@ -1350,10 +1357,14 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 		ib(res.aux.perWorkTokensAux.intAdjustedDiskWriteBytes))
 	// The models we are fitting to compute tokens based on the reported size of
 	// the write and ingest.
-	p.Printf("write-model %.2fx+%s (smoothed %.2fx+%s) + ",
-		res.aux.perWorkTokensAux.intL0WriteLinearModel.multiplier,
-		ib(res.aux.perWorkTokensAux.intL0WriteLinearModel.constant),
-		res.l0WriteLM.multiplier, ib(res.l0WriteLM.constant))
+	p.Printf("write-model [wal: %.2fx+%s (smoothed %.2fx+%s) l0: %.2fx+%s (smoothed %.2fx+%s)]+ ",
+		res.aux.perWorkTokensAux.intWriteToWALLinearModel.multiplier,
+		ib(res.aux.perWorkTokensAux.intWriteToWALLinearModel.constant),
+		res.writeToWALLM.multiplier, ib(res.writeToWALLM.constant),
+		res.aux.perWorkTokensAux.intWALToL0LinearModel.multiplier,
+		ib(res.aux.perWorkTokensAux.intWALToL0LinearModel.constant),
+		res.walToL0LM.multiplier, ib(res.walToL0LM.constant),
+	)
 	p.Printf("l0-ingest-model %.2fx+%s (smoothed %.2fx+%s) + ",
 		res.aux.perWorkTokensAux.intL0IngestedLinearModel.multiplier,
 		ib(res.aux.perWorkTokensAux.intL0IngestedLinearModel.constant),
@@ -1373,7 +1384,7 @@ func (res adjustTokensResult) SafeFormat(p redact.SafePrinter, _ rune) {
 	p.Printf("compacted %s [≈%s], ", ib(res.aux.intL0CompactedBytes), ib(res.smoothedIntL0CompactedBytes))
 	// The tokens computed for flush, based on observed flush throughput and
 	// utilization.
-	p.Printf("flushed %s [≈%s] (mult %.2f); ", ib(int64(res.aux.intFlushTokens)),
+	p.Printf("flush-capacity %s [≈%s] (mult %.2f); ", ib(int64(res.aux.intFlushTokens)),
 		ib(int64(res.smoothedNumFlushTokens)), res.flushUtilTargetFraction)
 	p.Printf("admitting ")
 	if res.aux.intWALFailover {

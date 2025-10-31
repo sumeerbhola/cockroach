@@ -702,14 +702,18 @@ func TestStoreWorkQueueBasic(t *testing.T) {
 				return buf.stringAndReset()
 
 			case "stats-to-ignore":
-				var ingestedBytes, ingestedIntoL0Bytes, writeBytes int
+				var ingestedBytes, ingestedIntoL0Bytes, writeBytesRaw, writeBytesAsSSTable int
 				d.ScanArgs(t, "ingested-bytes", &ingestedBytes)
 				d.ScanArgs(t, "ingested-into-L0-bytes", &ingestedIntoL0Bytes)
-				d.ScanArgs(t, "write-bytes", &writeBytes)
+				d.ScanArgs(t, "write-bytes-raw", &writeBytesRaw)
+				d.ScanArgs(t, "write-bytes-as-sstable", &writeBytesAsSSTable)
 				q.StatsToIgnore(pebble.IngestOperationStats{
 					Bytes:                     uint64(ingestedBytes),
 					ApproxIngestedIntoL0Bytes: uint64(ingestedIntoL0Bytes),
-				}, uint64(writeBytes))
+				}, WriteBytesToIgnoreStat{
+					RawBytes:       uint64(writeBytesRaw),
+					BytesAsSSTable: uint64(writeBytesAsSSTable),
+				})
 				return printQueue()
 
 			case "print":

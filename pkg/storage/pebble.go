@@ -2571,7 +2571,7 @@ func (p *Pebble) BufferedSize() int {
 // ConvertFilesToBatchAndCommit implements the Engine interface.
 func (p *Pebble) ConvertFilesToBatchAndCommit(
 	_ context.Context, paths []string, clearedSpans []roachpb.Span,
-) error {
+) (batchSize int, err error) {
 	files := make([]sstable.ReadableFile, len(paths))
 	closeFiles := func() {
 		for i := range files {
@@ -2584,7 +2584,7 @@ func (p *Pebble) ConvertFilesToBatchAndCommit(
 		f, err := p.cfg.env.Open(fileName)
 		if err != nil {
 			closeFiles()
-			return err
+			return 0, err
 		}
 		files[i] = f
 	}
@@ -2604,7 +2604,7 @@ func (p *Pebble) ConvertFilesToBatchAndCommit(
 		// not close any of the files or close all the files in the error case.
 		// The natural behavior would be to not close any file. Fix this in
 		// Pebble, and then adjust the code here if needed.
-		return err
+		return 0, err
 	}
 	defer iter.Close()
 
@@ -2613,7 +2613,7 @@ func (p *Pebble) ConvertFilesToBatchAndCommit(
 		err :=
 			batch.ClearRawRange(clearedSpans[i].Key, clearedSpans[i].EndKey, true, true)
 		if err != nil {
-			return err
+			return 0, err
 		}
 	}
 	valid, err := iter.SeekEngineKeyGE(EngineKey{Key: roachpb.KeyMin})
@@ -2652,9 +2652,13 @@ func (p *Pebble) ConvertFilesToBatchAndCommit(
 	}
 	if err != nil {
 		batch.Close()
-		return err
+		return 0, err
 	}
-	return batch.Commit(true)
+	batchSize = batch.Len()
+	if err = batch.Commit(true); err != nil {
+		return 0, err
+	}
+	return batchSize, nil
 }
 
 func (p *Pebble) GetDiskUnhealthy() bool {

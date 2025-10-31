@@ -637,7 +637,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	}
 
 	var ingestStats pebble.IngestOperationStats
-	var writeBytes uint64
+	var writeBytesAsSSTable, writeBytesRaw uint64
 	if applyAsIngest {
 		_ = applySnapshotTODO // all atomic
 		exciseSpan := desc.KeySpan().AsRawSpanWithNoLocals()
@@ -647,18 +647,22 @@ func (r *Replica) applySnapshotRaftMuLocked(
 		}
 	} else {
 		_ = applySnapshotTODO // all atomic
-		err := r.store.TODOEngine().ConvertFilesToBatchAndCommit(
+		batchLen, err := r.store.TODOEngine().ConvertFilesToBatchAndCommit(
 			ctx, inSnap.SSTStorageScratch.SSTs(), sb.cleared)
 		if err != nil {
 			return errors.Wrapf(err, "while applying as batch %s", inSnap.SSTStorageScratch.SSTs())
 		}
-		// Admission control wants the writeBytes to be roughly equivalent to
-		// the bytes in the SST when these writes are eventually flushed. We use
-		// the SST size of the incoming snapshot as that approximation. We've
-		// written additional SSTs to clear some data earlier in this method,
-		// but we ignore those since the bulk of the data is in the incoming
-		// snapshot.
-		writeBytes = uint64(inSnap.SSTSize)
+		if batchLen < 0 {
+			panic(errors.AssertionFailedf("negative batchLen %d", batchLen))
+		}
+		writeBytesRaw = uint64(batchLen)
+		// Admission control wants the writeBytesAsSSTable to be roughly
+		// equivalent to the bytes in the SST when these writes are eventually
+		// flushed. We use the SST size of the incoming snapshot as that
+		// approximation. We've written additional SSTs to clear some data earlier
+		// in this method, but we ignore those since the bulk of the data is in
+		// the incoming snapshot.
+		writeBytesAsSSTable = uint64(inSnap.SSTSize)
 	}
 	// The snapshot is visible, so finalize the truncation.
 	ls.finalizeApplySnapshotRaftMuLocked(ctx)
@@ -669,7 +673,7 @@ func (r *Replica) applySnapshotRaftMuLocked(
 	// kvBatchSnapshotStrategy.Receive().
 	if r.store.cfg.KVAdmissionController != nil {
 		r.store.cfg.KVAdmissionController.SnapshotIngestedOrWritten(
-			r.store.StoreID(), ingestStats, writeBytes)
+			r.store.StoreID(), ingestStats, writeBytesRaw, writeBytesAsSSTable)
 	}
 	stats.ingestion = timeutil.Now()
 

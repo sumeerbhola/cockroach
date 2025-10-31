@@ -305,7 +305,7 @@ type kvStoreTokenGranter struct {
 		startingIOTokens int64
 
 		// Estimation models.
-		l0WriteLM, l0IngestLM, ingestLM, writeAmpLM tokensLinearModel
+		writeToWALLM, walToL0LM, l0IngestLM, ingestLM, writeAmpLM tokensLinearModel
 	}
 
 	ioTokensExhaustedDurationMetric [admissionpb.NumWorkClasses]*metric.Counter
@@ -728,14 +728,16 @@ func (sg *kvStoreTokenGranter) getDiskTokensUsedAndReset() (
 
 // setAdmittedModelsLocked implements granterWithIOTokens.
 func (sg *kvStoreTokenGranter) setLinearModels(
-	l0WriteLM tokensLinearModel,
+	writeToWALLM tokensLinearModel,
+	walToL0LM tokensLinearModel,
 	l0IngestLM tokensLinearModel,
 	ingestLM tokensLinearModel,
 	writeAmpLM tokensLinearModel,
 ) {
 	sg.mu.Lock()
 	defer sg.mu.Unlock()
-	sg.mu.l0WriteLM = l0WriteLM
+	sg.mu.writeToWALLM = writeToWALLM
+	sg.mu.walToL0LM = walToL0LM
 	sg.mu.l0IngestLM = l0IngestLM
 	sg.mu.ingestLM = ingestLM
 	sg.mu.writeAmpLM = writeAmpLM
@@ -766,7 +768,8 @@ func (sg *kvStoreTokenGranter) storeReplicatedWorkAdmittedLocked(
 				sg.mu.availableIOTokens[admissionpb.ElasticWorkClass] <= 0))
 	}
 	wasExhausted := exhaustedFunc()
-	actualL0WriteTokens := sg.mu.l0WriteLM.applyLinearModel(admittedInfo.WriteBytes)
+	actualWALWriteTokens := sg.mu.writeToWALLM.applyLinearModel(admittedInfo.WriteBytes)
+	actualL0WriteTokens := sg.mu.walToL0LM.applyLinearModel(actualWALWriteTokens)
 	actualL0IngestTokens := sg.mu.l0IngestLM.applyLinearModel(admittedInfo.IngestedBytes)
 	actualL0Tokens := actualL0WriteTokens + actualL0IngestTokens
 	additionalL0TokensNeeded := actualL0Tokens - originalTokens

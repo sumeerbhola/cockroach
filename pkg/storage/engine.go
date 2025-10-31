@@ -1070,12 +1070,14 @@ type Engine interface {
 	// This method is expected to be used instead of IngestLocalFiles* or
 	// IngestAndExciseFiles when the sum of the file sizes is small.
 	//
+	// It returns the size of the batch that was committed.
+	//
 	// TODO(sumeer): support this as an alternative to IngestAndExciseFiles.
 	// This should be easy since we use NewSSTEngineIterator to read the ssts,
 	// which supports multiple levels.
 	ConvertFilesToBatchAndCommit(
 		ctx context.Context, paths []string, clearedSpans []roachpb.Span,
-	) error
+	) (batchSize int, err error)
 	// CompactRange ensures that the specified range of key value pairs is
 	// optimized for space efficiency.
 	CompactRange(ctx context.Context, start, end roachpb.Key) error
