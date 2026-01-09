@@ -313,7 +313,7 @@ type granterWithIOTokens interface {
 	) (tokensUsed int64, tokensUsedByElasticWork int64)
 	// getDiskTokensUsedAndReset returns the disk bandwidth tokens used since the
 	// last such call.
-	getDiskTokensUsedAndReset() [admissionpb.NumStoreWorkTypes]diskTokens
+	getDiskTokensUsedAndReset() (_ [admissionpb.NumStoreWorkTypes]diskTokens, errorTokens diskTokens)
 	// setLinearModels supplies the models to use when storeWriteDone or
 	// storeReplicatedWorkAdmittedLocked is called, to adjust token consumption.
 	// Note that these models are not used for token adjustment at admission
@@ -322,6 +322,8 @@ type granterWithIOTokens interface {
 	// of WorkQueue at admission time. See the long explanatory comment at the
 	// beginning of store_token_estimation.go, regarding token estimation.
 	setLinearModels(l0WriteLM, l0IngestLM, ingestLM, writeAmpLM tokensLinearModel)
+
+	hadExhaustedDiskTokens() bool
 }
 
 // granterWithStoreReplicatedWorkAdmitted is used to abstract

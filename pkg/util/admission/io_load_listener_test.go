@@ -469,8 +469,9 @@ func (g *testGranterWithIOTokens) setAvailableTokens(
 
 func (g *testGranterWithIOTokens) getDiskTokensUsedAndReset() (
 	usedTokens [admissionpb.NumStoreWorkTypes]diskTokens,
+	errorTokens diskTokens,
 ) {
-	return g.diskBandwidthTokensUsed
+	return g.diskBandwidthTokensUsed, diskTokens{}
 }
 
 func (g *testGranterWithIOTokens) setLinearModels(
@@ -488,6 +489,10 @@ func (g *testGranterWithIOTokens) setLinearModels(
 	fmt.Fprintf(&g.buf, " write-amp-lm: ")
 	printLinearModel(&g.buf, writeAmpLM)
 	fmt.Fprintf(&g.buf, "\n")
+}
+
+func (g *testGranterWithIOTokens) hadExhaustedDiskTokens() bool {
+	return false
 }
 
 func tokensForTokenTickDurationToString(tokens int64) string {
@@ -524,8 +529,9 @@ func (g *testGranterNonNegativeTokens) setAvailableTokens(
 
 func (g *testGranterNonNegativeTokens) getDiskTokensUsedAndReset() (
 	usedTokens [admissionpb.NumStoreWorkTypes]diskTokens,
+	errorTokens diskTokens,
 ) {
-	return [admissionpb.NumStoreWorkTypes]diskTokens{}
+	return [admissionpb.NumStoreWorkTypes]diskTokens{}, diskTokens{}
 }
 
 func (g *testGranterNonNegativeTokens) setLinearModels(
@@ -542,6 +548,10 @@ func (g *testGranterNonNegativeTokens) setLinearModels(
 	require.LessOrEqual(g.t, int64(0), ingestLM.constant)
 	require.LessOrEqual(g.t, 1.0, writeAmpLM.multiplier)
 	require.LessOrEqual(g.t, int64(0), writeAmpLM.constant)
+}
+
+func (g *testGranterNonNegativeTokens) hadExhaustedDiskTokens() bool {
+	return false
 }
 
 // Tests if the tokenAllocationTicker produces correct adjustment interval

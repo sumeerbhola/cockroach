@@ -124,8 +124,11 @@ func (sgc *StoreGrantCoordinators) SetPebbleMetricsProvider(
 		// The first adjustment interval is unloaded. We start as unloaded mainly
 		// for tests, and do a one-way transition to do 1ms ticks once we encounter
 		// load in the system.
-		var systemLoaded bool
-		t.adjustmentStart(false /* loaded */)
+		//
+		// HACK: change unloaded interval to 50ms. And keep burst at 250ms ticks. Then
+		// do error correction at 100ms.
+		var systemLoaded = true
+		t.adjustmentStart(true /* loaded */)
 		var remainingTicks uint64
 		for !done {
 			select {
@@ -142,6 +145,7 @@ func (sgc *StoreGrantCoordinators) SetPebbleMetricsProvider(
 				// make sure we account for errors prior to starting a new adjustment
 				// interval.
 				if t.shouldAdjustForError(remainingTicks, systemLoaded) {
+					log.Dev.Infof(ctx, "disk-bw-error-adjustment tick")
 					metrics = pebbleMetricsProvider.GetPebbleMetrics()
 					for _, m := range metrics {
 						if gc, ok := sgc.gcMap.Load(m.StoreID); ok {
@@ -211,11 +215,12 @@ func (sgc *StoreGrantCoordinators) initGrantCoordinator(
 	snapshotQMetrics := makeSnapshotQueueMetrics(metricsRegistry)
 
 	kvg := &kvStoreTokenGranter{
-		knobs:                           sgc.knobs,
-		ioTokensExhaustedDurationMetric: sgcMetrics.KVIOTokensExhaustedDuration,
-		availableTokensMetric:           sgcMetrics.KVIOTokensAvailable,
-		tokensTakenMetric:               sgcMetrics.KVIOTokensTaken,
-		tokensReturnedMetric:            sgcMetrics.KVIOTokensReturned,
+		knobs:                                 sgc.knobs,
+		ioTokensExhaustedDurationMetric:       sgcMetrics.KVIOTokensExhaustedDuration,
+		diskByteTokensExhaustedDurationMetric: sgcMetrics.KVDiskByteTokensExhaustedDuration,
+		availableTokensMetric:                 sgcMetrics.KVIOTokensAvailable,
+		tokensTakenMetric:                     sgcMetrics.KVIOTokensTaken,
+		tokensReturnedMetric:                  sgcMetrics.KVIOTokensReturned,
 	}
 	// Setting tokens to unlimited is defensive. We expect that
 	// pebbleMetricsTick and allocateIOTokensTick will get called during
@@ -335,13 +340,14 @@ func (sgc *StoreGrantCoordinators) close() {
 // StoreGrantCoordinatorMetrics are per-store metrics for a store
 // GrantCoordinator.
 type StoreGrantCoordinatorMetrics struct {
-	KVIOTokensTaken             *metric.Counter
-	KVIOTokensReturned          *metric.Counter
-	KVIOTokensBypassed          *metric.Counter
-	KVIOTokensAvailable         [admissionpb.NumWorkClasses]*metric.Gauge
-	KVIOTokensExhaustedDuration [admissionpb.NumWorkClasses]*metric.Counter
-	L0CompactedBytes            *metric.Counter
-	L0TokensProduced            *metric.Counter
+	KVIOTokensTaken                   *metric.Counter
+	KVIOTokensReturned                *metric.Counter
+	KVIOTokensBypassed                *metric.Counter
+	KVIOTokensAvailable               [admissionpb.NumWorkClasses]*metric.Gauge
+	KVIOTokensExhaustedDuration       [admissionpb.NumWorkClasses]*metric.Counter
+	L0CompactedBytes                  *metric.Counter
+	L0TokensProduced                  *metric.Counter
+	KVDiskByteTokensExhaustedDuration *metric.Counter
 }
 
 // MetricStruct implements the metric.Struct interface.
@@ -361,6 +367,7 @@ func makeStoreGrantCoordinatorMetrics(registry *metric.Registry) StoreGrantCoord
 		metric.NewCounter(kvIOTokensExhaustedDuration),
 		metric.NewCounter(kvElasticIOTokensExhaustedDuration),
 	}
+	m.KVDiskByteTokensExhaustedDuration = metric.NewCounter(kvDiskByteTokensExhaustedDuration)
 	registry.AddMetricStruct(m)
 	return m
 }

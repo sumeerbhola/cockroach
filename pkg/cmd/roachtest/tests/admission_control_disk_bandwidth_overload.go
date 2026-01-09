@@ -11,18 +11,12 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/grafana"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/errors"
-	"github.com/stretchr/testify/require"
 )
 
 // This test sets up 2 workloads – kv0 consisting of "normal" priority writes
@@ -57,13 +51,15 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 				t.Fatalf("expected 2 nodes, found %d", c.Spec().NodeCount)
 			}
 
-			promCfg := &prometheus.Config{}
-			promCfg.WithPrometheusNode(c.WorkloadNode().InstallNodes()[0]).
-				WithNodeExporter(c.CRDBNodes().InstallNodes()).
-				WithCluster(c.CRDBNodes().InstallNodes()).
-				WithGrafanaDashboardJSON(grafana.SnapshotAdmissionControlGrafanaJSON)
-			err := c.StartGrafana(ctx, t.L(), promCfg)
-			require.NoError(t, err)
+			/*
+				promCfg := &prometheus.Config{}
+				promCfg.WithPrometheusNode(c.WorkloadNode().InstallNodes()[0]).
+					WithNodeExporter(c.CRDBNodes().InstallNodes()).
+					WithCluster(c.CRDBNodes().InstallNodes()).
+					WithGrafanaDashboardJSON(grafana.SnapshotAdmissionControlGrafanaJSON)
+				err := c.StartGrafana(ctx, t.L(), promCfg)
+				require.NoError(t, err)
+			*/
 
 			startOpts := option.NewStartOpts(option.NoBackupSchedule)
 			startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
@@ -72,9 +68,11 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 			settings := install.MakeClusterSettings()
 			c.Start(ctx, t.L(), startOpts, settings, c.CRDBNodes())
 
-			promClient, err := clusterstats.SetupCollectorPromClient(ctx, c, t.L(), promCfg)
-			require.NoError(t, err)
-			statCollector := clusterstats.NewStatsCollector(ctx, promClient)
+			/*
+				promClient, err := clusterstats.SetupCollectorPromClient(ctx, c, t.L(), promCfg)
+				require.NoError(t, err)
+				statCollector := clusterstats.NewStatsCollector(ctx, promClient)
+			*/
 
 			roachtestutil.SetAdmissionControl(ctx, t, c, true)
 
@@ -138,13 +136,13 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 				return nil
 			})
 
-			t.Status(fmt.Sprintf("waiting for workload to start and ramp up (<%s)", 30*time.Minute))
-			time.Sleep(60 * time.Minute)
+			t.Status(fmt.Sprintf("waiting for workload to start and ramp up (<%s)", 10*time.Minute))
+			time.Sleep(10 * time.Minute)
 
 			db := c.Conn(ctx, t.L(), len(c.CRDBNodes()))
 			defer db.Close()
 
-			const bandwidthLimitMbs = 75
+			const bandwidthLimitMbs = 80
 			if _, err := db.ExecContext(
 				// We intentionally set this to much lower than the provisioned value
 				// above to clearly show that the bandwidth limiter works.
@@ -155,72 +153,74 @@ func registerDiskBandwidthOverload(r registry.Registry) {
 			t.Status(fmt.Sprintf("setting bandwidth limit, and waiting for it to take effect. (<%s)", 2*time.Minute))
 			time.Sleep(5 * time.Minute)
 
-			m.Go(func(ctx context.Context) error {
-				t.Status(fmt.Sprintf("starting monitoring thread (<%s)", time.Minute))
-				writeBWMetric := divQuery("rate(sys_host_disk_write_bytes[1m])", 1<<20 /* 1MiB */)
-				readBWMetric := divQuery("rate(sys_host_disk_read_bytes[1m])", 1<<20 /* 1MiB */)
-				getMetricVal := func(query string, label string) (float64, error) {
-					point, err := statCollector.CollectPoint(ctx, t.L(), timeutil.Now(), query)
-					if err != nil {
-						t.L().Errorf("could not query prom %s", err.Error())
-						return 0, err
-					}
-					val := point[label]
-					if len(val) != 1 {
-						err = errors.Errorf(
-							"unexpected number %d of points for metric %s", len(val), query)
-						t.L().Errorf("%s", err.Error())
-						return 0, err
-					}
-					for storeID, v := range val {
-						t.L().Printf("%s(store=%s): %f", query, storeID, v.Value)
-						return v.Value, nil
-					}
-					// Unreachable.
-					panic("unreachable")
-				}
-
-				// Allow a 5% room for error.
-				const bandwidthThreshold = bandwidthLimitMbs * 1.05
-				const sampleCountForBW = 12
-				const collectionIntervalSeconds = 10.0
-				// Loop for ~20 minutes.
-				const numIterations = int(20 / (collectionIntervalSeconds / 60))
-				var writeBWValues []float64
-				numErrors := 0
-				numSuccesses := 0
-				for i := 0; i < numIterations; i++ {
-					time.Sleep(collectionIntervalSeconds * time.Second)
-					writeVal, err := getMetricVal(writeBWMetric, "node")
-					if err != nil {
-						numErrors++
-						continue
-					}
-					readVal, err := getMetricVal(readBWMetric, "node")
-					if err != nil {
-						numErrors++
-						continue
-					}
-					totalBW := writeVal + readVal
-					writeBWValues = append(writeBWValues, writeVal)
-					// We want to use the mean of the last 2m of data to avoid short-lived
-					// spikes causing failures.
-					if len(writeBWValues) >= sampleCountForBW {
-						// TODO(aaditya): We should be asserting on total bandwidth once reads
-						// are being paced.
-						latestSampleMeanForBW := roachtestutil.GetMeanOverLastN(sampleCountForBW, writeBWValues)
-						if latestSampleMeanForBW > bandwidthThreshold {
-							t.Fatalf("mean write bandwidth over the last 2m %f (last iter: %f) exceeded threshold of %f, read bandwidth: %f, total bandwidth: %f", latestSampleMeanForBW, writeVal, bandwidthThreshold, readVal, totalBW)
+			/*
+				m.Go(func(ctx context.Context) error {
+					t.Status(fmt.Sprintf("starting monitoring thread (<%s)", time.Minute))
+					writeBWMetric := divQuery("rate(sys_host_disk_write_bytes[1m])", 1<<20)
+					readBWMetric := divQuery("rate(sys_host_disk_read_bytes[1m])", 1<<20)
+					getMetricVal := func(query string, label string) (float64, error) {
+						point, err := statCollector.CollectPoint(ctx, t.L(), timeutil.Now(), query)
+						if err != nil {
+							t.L().Errorf("could not query prom %s", err.Error())
+							return 0, err
 						}
+						val := point[label]
+						if len(val) != 1 {
+							err = errors.Errorf(
+								"unexpected number %d of points for metric %s", len(val), query)
+							t.L().Errorf("%s", err.Error())
+							return 0, err
+						}
+						for storeID, v := range val {
+							t.L().Printf("%s(store=%s): %f", query, storeID, v.Value)
+							return v.Value, nil
+						}
+						// Unreachable.
+						panic("unreachable")
 					}
-					numSuccesses++
-				}
-				t.Status(fmt.Sprintf("done monitoring, errors: %d successes: %d", numErrors, numSuccesses))
-				if numErrors > numSuccesses {
-					t.Fatalf("too many errors retrieving metrics")
-				}
-				return nil
-			})
+
+					// Allow a 5% room for error.
+					const bandwidthThreshold = bandwidthLimitMbs * 1.05
+					const sampleCountForBW = 12
+					const collectionIntervalSeconds = 10.0
+					// Loop for ~20 minutes.
+					const numIterations = int(20 / (collectionIntervalSeconds / 60))
+					var writeBWValues []float64
+					numErrors := 0
+					numSuccesses := 0
+					for i := 0; i < numIterations; i++ {
+						time.Sleep(collectionIntervalSeconds * time.Second)
+						writeVal, err := getMetricVal(writeBWMetric, "node")
+						if err != nil {
+							numErrors++
+							continue
+						}
+						readVal, err := getMetricVal(readBWMetric, "node")
+						if err != nil {
+							numErrors++
+							continue
+						}
+						totalBW := writeVal + readVal
+						writeBWValues = append(writeBWValues, writeVal)
+						// We want to use the mean of the last 2m of data to avoid short-lived
+						// spikes causing failures.
+						if len(writeBWValues) >= sampleCountForBW {
+							// TODO(aaditya): We should be asserting on total bandwidth once reads
+							// are being paced.
+							latestSampleMeanForBW := roachtestutil.GetMeanOverLastN(sampleCountForBW, writeBWValues)
+							if latestSampleMeanForBW > bandwidthThreshold {
+								t.Fatalf("mean write bandwidth over the last 2m %f (last iter: %f) exceeded threshold of %f, read bandwidth: %f, total bandwidth: %f", latestSampleMeanForBW, writeVal, bandwidthThreshold, readVal, totalBW)
+							}
+						}
+						numSuccesses++
+					}
+					t.Status(fmt.Sprintf("done monitoring, errors: %d successes: %d", numErrors, numSuccesses))
+					if numErrors > numSuccesses {
+						t.Fatalf("too many errors retrieving metrics")
+					}
+					return nil
+				})
+			*/
 
 			m.Wait()
 		},

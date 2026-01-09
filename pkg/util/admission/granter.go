@@ -6,10 +6,12 @@
 package admission
 
 import (
+	"context"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -286,6 +288,7 @@ type kvStoreTokenGranter struct {
 		// TODO(aaditya): add support for read/IOPS tokens.
 		// Disk bandwidth tokens.
 		diskTokensAvailable diskTokens
+		diskTokensCapacity  diskTokens
 		diskTokensError     struct {
 			// prevObserved{Writes,Reads} is the observed disk metrics in the last
 			// call to adjustDiskTokenErrorLocked. These are used to compute the
@@ -295,10 +298,16 @@ type kvStoreTokenGranter struct {
 			diskWriteTokensAlreadyDeducted int64
 			diskReadTokensAlreadyDeducted  int64
 		}
-		diskTokensUsed [admissionpb.NumStoreWorkTypes]diskTokens
+		diskTokensUsed                  [admissionpb.NumStoreWorkTypes]diskTokens
+		diskTokensUsedByErrorAdjustment diskTokens
+		cumErrorWrites                  int64
+		cumAccountedForErrorWrites      int64
+		absErrorAdjWrites               int64
+		absErrorAdjReads                int64
 		// exhaustedStart is the time when the corresponding availableIOTokens
 		// became <= 0. Ignored when the corresponding availableIOTokens is > 0.
-		exhaustedStart [admissionpb.NumWorkClasses]time.Time
+		exhaustedStart          [admissionpb.NumWorkClasses]time.Time
+		diskBytesExhaustedStart time.Time
 		// startingIOTokens is the number of tokens set by setAvailableTokens for
 		// regular work. It is used to compute the tokens used, by computing
 		// startingIOTokens-availableIOTokens[RegularWorkClass].
@@ -308,10 +317,11 @@ type kvStoreTokenGranter struct {
 		l0WriteLM, l0IngestLM, ingestLM, writeAmpLM tokensLinearModel
 	}
 
-	ioTokensExhaustedDurationMetric [admissionpb.NumWorkClasses]*metric.Counter
-	availableTokensMetric           [admissionpb.NumWorkClasses]*metric.Gauge
-	tokensReturnedMetric            *metric.Counter
-	tokensTakenMetric               *metric.Counter
+	ioTokensExhaustedDurationMetric       [admissionpb.NumWorkClasses]*metric.Counter
+	diskByteTokensExhaustedDurationMetric *metric.Counter
+	availableTokensMetric                 [admissionpb.NumWorkClasses]*metric.Gauge
+	tokensReturnedMetric                  *metric.Counter
+	tokensTakenMetric                     *metric.Counter
 }
 
 var _ granterWithIOTokens = &kvStoreTokenGranter{}
@@ -411,8 +421,7 @@ func (sg *kvStoreTokenGranter) tryGetLocked(count int64, wt admissionpb.StoreWor
 	case admissionpb.RegularStoreWorkType:
 		if sg.mu.availableIOTokens[admissionpb.RegularWorkClass] > 0 {
 			sg.subtractIOTokensLocked(count, count, false)
-			sg.mu.diskTokensAvailable.writeByteTokens -= diskWriteTokens
-			sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted += diskWriteTokens
+			sg.subtractDiskTokensLocked(diskWriteTokens, false)
 			sg.mu.diskTokensUsed[wt].writeByteTokens += diskWriteTokens
 			return true
 		}
@@ -422,8 +431,7 @@ func (sg *kvStoreTokenGranter) tryGetLocked(count int64, wt admissionpb.StoreWor
 			sg.mu.availableIOTokens[admissionpb.ElasticWorkClass] > 0 {
 			sg.subtractIOTokensLocked(count, count, false)
 			sg.mu.elasticIOTokensUsedByElastic += count
-			sg.mu.diskTokensAvailable.writeByteTokens -= diskWriteTokens
-			sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted += diskWriteTokens
+			sg.subtractDiskTokensLocked(diskWriteTokens, false)
 			sg.mu.diskTokensUsed[wt].writeByteTokens += diskWriteTokens
 			return true
 		}
@@ -431,8 +439,7 @@ func (sg *kvStoreTokenGranter) tryGetLocked(count int64, wt admissionpb.StoreWor
 		// Snapshot ingests do not go into L0, so we only subject them to
 		// writeByteTokens.
 		if sg.mu.diskTokensAvailable.writeByteTokens > 0 {
-			sg.mu.diskTokensAvailable.writeByteTokens -= diskWriteTokens
-			sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted += diskWriteTokens
+			sg.subtractDiskTokensLocked(diskWriteTokens, false)
 			sg.mu.diskTokensUsed[wt].writeByteTokens += diskWriteTokens
 			return true
 		}
@@ -472,14 +479,12 @@ func (sg *kvStoreTokenGranter) subtractTokensForStoreWorkTypeLocked(
 	switch wt {
 	case admissionpb.RegularStoreWorkType, admissionpb.ElasticStoreWorkType:
 		diskTokenCount := sg.mu.writeAmpLM.applyLinearModel(count)
-		sg.mu.diskTokensAvailable.writeByteTokens -= diskTokenCount
-		sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted += diskTokenCount
+		sg.subtractDiskTokensLocked(diskTokenCount, false)
 		sg.mu.diskTokensUsed[wt].writeByteTokens += diskTokenCount
 	case admissionpb.SnapshotIngestStoreWorkType:
 		// Do not apply the writeAmpLM since these writes do not incur additional
 		// write-amp.
-		sg.mu.diskTokensAvailable.writeByteTokens -= count
-		sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted += count
+		sg.subtractDiskTokensLocked(count, false)
 		sg.mu.diskTokensUsed[wt].writeByteTokens += count
 	}
 }
@@ -516,14 +521,30 @@ func (sg *kvStoreTokenGranter) adjustDiskTokenErrorLocked(readBytes uint64, writ
 
 	// Compensate for error due to writes.
 	writeError := intWrites - sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted
-	if writeError > 0 {
-		sg.mu.diskTokensAvailable.writeByteTokens -= writeError
+	sg.mu.cumErrorWrites += writeError
+	notAccountedErrorWrites := sg.mu.cumErrorWrites - sg.mu.cumAccountedForErrorWrites
+	if notAccountedErrorWrites != 0 {
+		intAccountedFor := notAccountedErrorWrites / 15
+		sg.mu.cumAccountedForErrorWrites += intAccountedFor
+		sg.subtractDiskTokensLocked(intAccountedFor, false)
+		sg.mu.diskTokensUsedByErrorAdjustment.writeByteTokens += intAccountedFor
+		absError := writeError
+		if absError < 0 {
+			absError = -absError
+		}
+		sg.mu.absErrorAdjWrites += absError
 	}
 
 	// Compensate for error due to reads.
 	readError := intReads - sg.mu.diskTokensError.diskReadTokensAlreadyDeducted
-	if readError > 0 {
-		sg.mu.diskTokensAvailable.writeByteTokens -= readError
+	if readError != 0 {
+		sg.subtractDiskTokensLocked(readError, false)
+		sg.mu.diskTokensUsedByErrorAdjustment.readByteTokens += readError
+		absError := readError
+		if absError < 0 {
+			absError = -absError
+		}
+		sg.mu.absErrorAdjReads += absError
 	}
 
 	// We have compensated for error, if any, in this interval, so we reset the
@@ -565,6 +586,46 @@ func (sg *kvStoreTokenGranter) subtractIOTokensLocked(
 		} else {
 			sg.tokensReturnedMetric.Inc(-count)
 		}
+	}
+}
+
+var transitionToNegative = log.Every(time.Second * 10)
+var transitionToPositive = log.Every(time.Second * 10)
+var availEvery = log.Every(time.Second * 10)
+
+func (sg *kvStoreTokenGranter) subtractDiskTokensLocked(count int64, settingAvailableTokens bool) {
+	avail := sg.mu.diskTokensAvailable.writeByteTokens
+	sg.mu.diskTokensAvailable.writeByteTokens -= count
+	if /*settingAvailableTokens &&*/ sg.mu.diskTokensAvailable.writeByteTokens > sg.mu.diskTokensCapacity.writeByteTokens {
+		sg.mu.diskTokensAvailable.writeByteTokens = sg.mu.diskTokensCapacity.writeByteTokens
+	}
+	if !settingAvailableTokens {
+		sg.mu.diskTokensError.diskWriteTokensAlreadyDeducted += count
+	}
+	if count > 0 && avail > 0 && sg.mu.diskTokensAvailable.writeByteTokens <= 0 {
+		// Transition from > 0 to <= 0.
+		sg.mu.diskBytesExhaustedStart = timeutil.Now()
+		if transitionToNegative.ShouldLog() {
+			log.Dev.Infof(context.Background(), "disk-bw-metric: disk write tokens exhausted")
+		}
+	} else if count < 0 && avail <= 0 &&
+		(sg.mu.diskTokensAvailable.writeByteTokens > 0 || settingAvailableTokens) {
+		// Transition from <= 0 to > 0, or if we're newly setting available
+		// tokens. The latter ensures that if the available tokens stay <= 0, we
+		// don't show a sudden change in the metric after minutes of exhaustion
+		// (we had observed such behavior prior to this change).
+		now := timeutil.Now()
+		exhaustedMicros := now.Sub(sg.mu.diskBytesExhaustedStart).Microseconds()
+		sg.diskByteTokensExhaustedDurationMetric.Inc(exhaustedMicros)
+		if sg.mu.diskTokensAvailable.writeByteTokens <= 0 {
+			sg.mu.diskBytesExhaustedStart = now
+		} else if transitionToPositive.ShouldLog() {
+			log.Dev.Infof(context.Background(), "disk-bw-metric: disk write tokens no longer exhausted")
+		}
+	}
+	if availEvery.ShouldLog() {
+		log.Dev.Infof(context.Background(),
+			"disk-bw-metric: available disk write tokens: %d", sg.mu.diskTokensAvailable.writeByteTokens)
 	}
 }
 
@@ -700,10 +761,8 @@ func (sg *kvStoreTokenGranter) setAvailableTokens(
 	sg.mu.startingIOTokens = sg.mu.availableIOTokens[admissionpb.RegularWorkClass]
 
 	// Allocate disk write and read tokens.
-	sg.mu.diskTokensAvailable.writeByteTokens += diskWriteTokens
-	if sg.mu.diskTokensAvailable.writeByteTokens > diskWriteTokensCapacity {
-		sg.mu.diskTokensAvailable.writeByteTokens = diskWriteTokensCapacity
-	}
+	sg.mu.diskTokensCapacity.writeByteTokens = diskWriteTokensCapacity
+	sg.subtractDiskTokensLocked(-diskWriteTokens, true)
 	// NB: We don't cap the disk read tokens as they are only deducted during the
 	// error accounting loop. So essentially, we give reads the "burst" capacity
 	// of the error accounting interval. See `adjustDiskTokenErrorLocked` for the
@@ -716,6 +775,7 @@ func (sg *kvStoreTokenGranter) setAvailableTokens(
 // getDiskTokensUsedAndResetLocked implements granterWithIOTokens.
 func (sg *kvStoreTokenGranter) getDiskTokensUsedAndReset() (
 	usedTokens [admissionpb.NumStoreWorkTypes]diskTokens,
+	errorTokens diskTokens,
 ) {
 	sg.mu.Lock()
 	defer sg.mu.Unlock()
@@ -723,7 +783,16 @@ func (sg *kvStoreTokenGranter) getDiskTokensUsedAndReset() (
 		usedTokens[i] = sg.mu.diskTokensUsed[i]
 		sg.mu.diskTokensUsed[i] = diskTokens{}
 	}
-	return usedTokens
+	errorTokens = sg.mu.diskTokensUsedByErrorAdjustment
+	// HACK.
+	errorTokens.writeIOPSTokens = sg.mu.absErrorAdjWrites
+	errorTokens.readIOPSTokens = sg.mu.cumErrorWrites
+	sg.mu.diskTokensUsedByErrorAdjustment = diskTokens{}
+	sg.mu.cumErrorWrites = 0
+	sg.mu.cumAccountedForErrorWrites = 0
+	sg.mu.absErrorAdjWrites = 0
+	sg.mu.absErrorAdjReads = 0
+	return usedTokens, errorTokens
 }
 
 // setAdmittedModelsLocked implements granterWithIOTokens.
@@ -760,6 +829,10 @@ func (sg *kvStoreTokenGranter) storeReplicatedWorkAdmittedLocked(
 ) (additionalTokens int64) {
 	// Reminder: coord.mu protects the state in the kvStoreTokenGranter.
 	wc := admissionpb.WorkClassFromStoreWorkType(wt)
+	// TODO: this should be really be about a transition of something went from
+	// exhausted to not exhausted and not about this wc in particular. And this
+	// has not kept up with the various things that have been added for
+	// granting.
 	exhaustedFunc := func() bool {
 		return sg.mu.availableIOTokens[admissionpb.RegularWorkClass] <= 0 ||
 			(wc == admissionpb.ElasticWorkClass && (sg.mu.diskTokensAvailable.writeByteTokens <= 0 ||
@@ -781,7 +854,7 @@ func (sg *kvStoreTokenGranter) storeReplicatedWorkAdmittedLocked(
 	actualDiskWriteTokens := sg.mu.writeAmpLM.applyLinearModel(totalBytesIntoLSM)
 	originalDiskTokens := sg.mu.writeAmpLM.applyLinearModel(originalTokens)
 	additionalDiskWriteTokens := actualDiskWriteTokens - originalDiskTokens
-	sg.mu.diskTokensAvailable.writeByteTokens -= additionalDiskWriteTokens
+	sg.subtractDiskTokensLocked(additionalDiskWriteTokens, false)
 	sg.mu.diskTokensUsed[wt].writeByteTokens += additionalDiskWriteTokens
 
 	if canGrantAnother && (additionalL0TokensNeeded < 0) {
@@ -795,6 +868,10 @@ func (sg *kvStoreTokenGranter) storeReplicatedWorkAdmittedLocked(
 	// decisions, but we don't necessarily need something more sophisticated
 	// like "Dominant Resource Fairness".
 	return additionalL0TokensNeeded
+}
+
+func (sg *kvStoreTokenGranter) hadExhaustedDiskTokens() bool {
+	return sg.diskByteTokensExhaustedDurationMetric.Count() > 0
 }
 
 // StoreMetrics are the metrics and some config information for a store.
@@ -933,6 +1010,13 @@ var (
 		Name:        "admission.l0_tokens_produced.kv",
 		Help:        "Total bytes produced for L0 writes",
 		Measurement: "Tokens",
+		Unit:        metric.Unit_COUNT,
+	}
+	kvDiskByteTokensExhaustedDuration = metric.Metadata{
+		Name: "admission.granter.disk_byte_tokens_exhausted_duration.kv",
+		Help: "Total duration (in micros) when disk byte tokens were exhausted, as observed by " +
+			"the token granter (not waiters)",
+		Measurement: "Microseconds",
 		Unit:        metric.Unit_COUNT,
 	}
 )

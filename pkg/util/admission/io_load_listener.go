@@ -435,8 +435,8 @@ const loadedDuration = tickDuration(1 * time.Millisecond)
 // TODO(aaditya): Consider lowering this threshold. It was picked arbitrarily
 // and seems to work well enough. Would it be better to do error accounting at
 // an even higher frequency?
-const errorAdjustmentInterval = 1
-const errorTicksInAdjustmentInterval = int64(adjustmentInterval / errorAdjustmentInterval)
+// const errorAdjustmentInterval = 1
+const errorTicksInAdjustmentInterval = int64(adjustmentInterval /* * 100*/)
 
 // tokenAllocationTicker wraps a time.Ticker, and also computes the remaining
 // ticks in the adjustment interval, given an expected tick rate. If every tick
@@ -500,6 +500,8 @@ func (t *tokenAllocationTicker) shouldAdjustForError(remainingTicks uint64, load
 		t.lastErrorAdjustmentTick = uint64(tickDur.ticksInAdjustmentInterval())
 	}
 	// We calculate the number of ticks in the errorAdjustmentDuration.
+	//
+	// Could be zero.
 	errorTickThreshold := uint64(tickDur.ticksInAdjustmentInterval() / errorTicksInAdjustmentInterval)
 	// We adjust for error when either we have passed the errorAdjustmentInterval
 	// threshold or it is the last tick before the new adjustment interval.
@@ -581,11 +583,11 @@ func (io *ioLoadListener) pebbleMetricsTick(ctx context.Context, metrics StoreMe
 	}
 	io.adjustTokens(ctx, metrics)
 	io.cumFlushWriteThroughput = metrics.Flush.WriteThroughput
-	// We assume that the system is loaded if there is less than unlimited tokens
-	// available.
-	//
-	// TODO(sumeer): this condition should also incorporate disk byte tokens.
-	return io.totalNumByteTokens < unlimitedTokens || io.totalNumElasticByteTokens < unlimitedTokens
+	// We assume that the system is loaded if there is less than unlimited
+	// tokens available, or if any time historically the disk tokens were
+	// exhausted.
+	return io.totalNumByteTokens < unlimitedTokens || io.totalNumElasticByteTokens < unlimitedTokens ||
+		io.kvGranter.hadExhaustedDiskTokens()
 }
 
 // For both byte and disk bandwidth tokens, allocateTokensTick gives out
@@ -742,10 +744,10 @@ func (io *ioLoadListener) adjustTokens(ctx context.Context, metrics StoreMetrics
 	elasticBWMaxUtil := ElasticBandwidthMaxUtil.Get(&io.settings.SV)
 	intDiskLoadInfo := computeIntervalDiskLoadInfo(
 		cumDiskBW.bytesRead, cumDiskBW.bytesWritten, metrics.DiskStats, elasticBWMaxUtil)
-	diskTokensUsed := io.kvGranter.getDiskTokensUsedAndReset()
+	diskTokensUsed, errorTokens := io.kvGranter.getDiskTokensUsedAndReset()
 	if metrics.DiskStats.ProvisionedBandwidth > 0 {
 		tokens := io.diskBandwidthLimiter.computeElasticTokens(
-			intDiskLoadInfo, diskTokensUsed)
+			intDiskLoadInfo, diskTokensUsed, errorTokens)
 		io.diskWriteTokens = tokens.writeByteTokens
 		io.diskWriteTokensAllocated = 0
 		io.diskReadTokens = tokens.readByteTokens

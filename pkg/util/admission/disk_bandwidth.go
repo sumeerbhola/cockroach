@@ -90,11 +90,12 @@ type intervalDiskLoadInfo struct {
 // diskBandwidthLimiterState is used as auxiliary information for logging
 // purposes and keeping past state.
 type diskBandwidthLimiterState struct {
-	tokens     diskTokens
-	prevTokens diskTokens
-	usedTokens [admissionpb.NumStoreWorkTypes]diskTokens
-	diskBWUtil float64
-	diskLoad   intervalDiskLoadInfo
+	tokens          diskTokens
+	prevTokens      diskTokens
+	usedTokens      [admissionpb.NumStoreWorkTypes]diskTokens
+	errorUsedTokens diskTokens
+	diskBWUtil      float64
+	diskLoad        intervalDiskLoadInfo
 }
 
 // diskBandwidthLimiter produces tokens for elastic work.
@@ -127,7 +128,9 @@ type diskTokens struct {
 
 // computeElasticTokens is called every adjustmentInterval.
 func (d *diskBandwidthLimiter) computeElasticTokens(
-	id intervalDiskLoadInfo, usedTokens [admissionpb.NumStoreWorkTypes]diskTokens,
+	id intervalDiskLoadInfo,
+	usedTokens [admissionpb.NumStoreWorkTypes]diskTokens,
+	errorUsedTokens diskTokens,
 ) diskTokens {
 	// TODO(aaditya): Include calculation for read and IOPS.
 	// Issue: https://github.com/cockroachdb/cockroach/issues/107623
@@ -149,6 +152,10 @@ func (d *diskBandwidthLimiter) computeElasticTokens(
 
 	totalUsedTokens := sumDiskTokens(usedTokens)
 	tokens := diskTokens{
+		// TODO: this needs cleanup. It is not writeByteTokens. It is byteTokens.
+		// But it represents the effect after deducting the projected read bytes.
+		// That is what it should say. All we need to do is document this better.
+		// Names are fine.
 		readByteTokens:  intReadBytes,
 		writeByteTokens: diskWriteTokens,
 		readIOPSTokens:  0,
@@ -160,11 +167,12 @@ func (d *diskBandwidthLimiter) computeElasticTokens(
 		diskBWUtil = float64(totalUsedTokens.writeByteTokens) / float64(prevState.tokens.writeByteTokens)
 	}
 	d.state = diskBandwidthLimiterState{
-		tokens:     tokens,
-		prevTokens: prevState.tokens,
-		usedTokens: usedTokens,
-		diskBWUtil: diskBWUtil,
-		diskLoad:   id,
+		tokens:          tokens,
+		prevTokens:      prevState.tokens,
+		usedTokens:      usedTokens,
+		errorUsedTokens: errorUsedTokens,
+		diskBWUtil:      diskBWUtil,
+		diskLoad:        id,
 	}
 	return tokens
 }
@@ -176,13 +184,16 @@ func (d *diskBandwidthLimiter) SafeFormat(p redact.SafePrinter, _ rune) {
 		unlimitedPrefix = " (unlimited)"
 	}
 	p.Printf("diskBandwidthLimiter%s (tokenUtilization %.2f, tokensUsed (elastic %s, "+
-		"snapshot %s, regular %s) tokens (write %s (prev %s), read %s (prev %s)), writeBW %s/s, "+
+		"snapshot %s, regular %s, error %s (abs w %s cum w %s)) tokens (write %s (prev %s), read %s (prev %s)), writeBW %s/s, "+
 		"readBW %s/s, provisioned %s/s)",
 		redact.SafeString(unlimitedPrefix),
 		d.state.diskBWUtil,
 		ib(d.state.usedTokens[admissionpb.ElasticStoreWorkType].writeByteTokens),
 		ib(d.state.usedTokens[admissionpb.SnapshotIngestStoreWorkType].writeByteTokens),
 		ib(d.state.usedTokens[admissionpb.RegularStoreWorkType].writeByteTokens),
+		ib(d.state.errorUsedTokens.writeByteTokens),
+		ib(d.state.errorUsedTokens.writeIOPSTokens),
+		ib(d.state.errorUsedTokens.readIOPSTokens),
 		ib(d.state.tokens.writeByteTokens),
 		ib(d.state.prevTokens.writeByteTokens),
 		ib(d.state.tokens.readByteTokens),

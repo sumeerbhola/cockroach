@@ -37,18 +37,18 @@ return-grant work=regular v=200
 ----
 kv-regular: returnGrant(200)
 GrantCoordinator:
- io-avail: 600(600), disk-write-tokens-avail: 100100, disk-read-tokens-deducted: 0
+ io-avail: 600(600), disk-write-tokens-avail: 100000, disk-read-tokens-deducted: 0
 
 # Setup waiting requests that want 400 tokens each.
 set-has-waiting-requests work=regular v=true
 ----
 GrantCoordinator:
- io-avail: 600(600), disk-write-tokens-avail: 100100, disk-read-tokens-deducted: 0
+ io-avail: 600(600), disk-write-tokens-avail: 100000, disk-read-tokens-deducted: 0
 
 set-return-value-from-granted work=regular v=400
 ----
 GrantCoordinator:
- io-avail: 600(600), disk-write-tokens-avail: 100100, disk-read-tokens-deducted: 0
+ io-avail: 600(600), disk-write-tokens-avail: 100000, disk-read-tokens-deducted: 0
 
 # Returning tokens triggers granting and 2 requests will be granted until the
 # tokens become <= 0.
@@ -58,19 +58,19 @@ kv-regular: returnGrant(100)
 kv-regular: granted in chain 0, and returning 400
 kv-regular: granted in chain 0, and returning 400
 GrantCoordinator:
- io-avail: -100(-100), disk-write-tokens-avail: 99400, disk-read-tokens-deducted: 0
+ io-avail: -100(-100), disk-write-tokens-avail: 99200, disk-read-tokens-deducted: 0
 
 set-return-value-from-granted work=regular v=100
 ----
 GrantCoordinator:
- io-avail: -100(-100), disk-write-tokens-avail: 99400, disk-read-tokens-deducted: 0
+ io-avail: -100(-100), disk-write-tokens-avail: 99200, disk-read-tokens-deducted: 0
 
 # No tokens to give.
 try-get work=regular
 ----
 kv-regular: tryGet(1) returned false
 GrantCoordinator:
- io-avail: -100(-100), disk-write-tokens-avail: 99400, disk-read-tokens-deducted: 0
+ io-avail: -100(-100), disk-write-tokens-avail: 99200, disk-read-tokens-deducted: 0
 
 # Increment by 50 tokens.
 set-tokens io-tokens=50 disk-write-tokens=99900 tick-interval=250
@@ -84,7 +84,7 @@ return-grant work=regular v=50
 ----
 kv-regular: returnGrant(50)
 GrantCoordinator:
- io-avail: 0(0), disk-write-tokens-avail: 99950, disk-read-tokens-deducted: 0
+ io-avail: 0(0), disk-write-tokens-avail: 99900, disk-read-tokens-deducted: 0
 
 # As soon as the tokens > 0, it will grant.
 return-grant work=regular v=1
@@ -92,19 +92,19 @@ return-grant work=regular v=1
 kv-regular: returnGrant(1)
 kv-regular: granted in chain 0, and returning 100
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: 99851, disk-read-tokens-deducted: 0
+ io-avail: -99(-99), disk-write-tokens-avail: 99800, disk-read-tokens-deducted: 0
 
 # Have waiting requests for kv-elastic too.
 set-has-waiting-requests work=elastic v=true
 ----
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: 99851, disk-read-tokens-deducted: 0
+ io-avail: -99(-99), disk-write-tokens-avail: 99800, disk-read-tokens-deducted: 0
 
 # The kv-elastic waiting requests need 200 tokens each.
 set-return-value-from-granted work=elastic v=200
 ----
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: 99851, disk-read-tokens-deducted: 0
+ io-avail: -99(-99), disk-write-tokens-avail: 99800, disk-read-tokens-deducted: 0
 
 # Since there are regular requests waiting, those are granted first.
 return-grant work=elastic v=400
@@ -115,13 +115,13 @@ kv-regular: granted in chain 0, and returning 100
 kv-regular: granted in chain 0, and returning 100
 kv-regular: granted in chain 0, and returning 100
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: 99851, disk-read-tokens-deducted: 0
+ io-avail: -99(-99), disk-write-tokens-avail: 99500, disk-read-tokens-deducted: 0
 
 # No more regular requests waiting.
 set-has-waiting-requests work=regular v=false
 ----
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: 99851, disk-read-tokens-deducted: 0
+ io-avail: -99(-99), disk-write-tokens-avail: 99500, disk-read-tokens-deducted: 0
 
 # kv-elastic is granted.
 set-tokens io-tokens=100 disk-write-tokens=100300 tick-interval=250
@@ -204,35 +204,35 @@ GrantCoordinator:
 store-write-done work=elastic orig-tokens=400 write-bytes=40
 ----
 kv-elastic: granted in chain 0, and returning 200
-kv-elastic: granted in chain 0, and returning 200
 GrantCoordinator:
- io-avail: 250(250), disk-write-tokens-avail: -140, disk-read-tokens-deducted: 0
+ io-avail: 450(450), disk-write-tokens-avail: -80, disk-read-tokens-deducted: 0
 
 set-tokens io-tokens=400 elastic-io-tokens=50 disk-write-tokens=120 tick-interval=250
 ----
+kv-elastic: granted in chain 0, and returning 200
 GrantCoordinator:
- io-avail: 400(50), disk-write-tokens-avail: -20, disk-read-tokens-deducted: 0
+ io-avail: 200(-150), disk-write-tokens-avail: -160, disk-read-tokens-deducted: 0
 
 set-has-waiting-requests work=elastic v=false
 ----
 GrantCoordinator:
- io-avail: 400(50), disk-write-tokens-avail: -20, disk-read-tokens-deducted: 0
+ io-avail: 200(-150), disk-write-tokens-avail: -160, disk-read-tokens-deducted: 0
 
 set-tokens io-tokens=400 elastic-io-tokens=50 disk-write-tokens=120 tick-interval=250
 ----
 GrantCoordinator:
- io-avail: 400(50), disk-write-tokens-avail: 100, disk-read-tokens-deducted: 0
+ io-avail: 400(-100), disk-write-tokens-avail: -40, disk-read-tokens-deducted: 0
 
 set-tokens io-tokens=400 elastic-io-tokens=101 disk-write-tokens=120 tick-interval=250
 ----
 GrantCoordinator:
- io-avail: 400(101), disk-write-tokens-avail: 120, disk-read-tokens-deducted: 0
+ io-avail: 400(1), disk-write-tokens-avail: 80, disk-read-tokens-deducted: 0
 
 try-get work=elastic v=10
 ----
 kv-elastic: tryGet(10) returned true
 GrantCoordinator:
- io-avail: 390(91), disk-write-tokens-avail: 110, disk-read-tokens-deducted: 0
+ io-avail: 390(-9), disk-write-tokens-avail: 70, disk-read-tokens-deducted: 0
 
 #####################################################################
 # Test store grant coordinator with 1ms tick rates for set-tokens, and transitions
@@ -251,20 +251,20 @@ GrantCoordinator:
 set-tokens io-tokens=10 disk-write-tokens=10 tick-interval=1
 ----
 GrantCoordinator:
- io-avail: 2500(2500), disk-write-tokens-avail: 2500, disk-read-tokens-deducted: 0
+ io-avail: 2500(2500), disk-write-tokens-avail: 10, disk-read-tokens-deducted: 0
 
 try-get work=elastic v=2490
 ----
 kv-elastic: tryGet(2490) returned true
 GrantCoordinator:
- io-avail: 10(10), disk-write-tokens-avail: 10, disk-read-tokens-deducted: 0
+ io-avail: 10(10), disk-write-tokens-avail: -2480, disk-read-tokens-deducted: 0
 
 # Initial tokens are effectively unlimited.
 try-get work=regular v=1
 ----
 kv-regular: tryGet(1) returned true
 GrantCoordinator:
- io-avail: 9(9), disk-write-tokens-avail: 9, disk-read-tokens-deducted: 0
+ io-avail: 9(9), disk-write-tokens-avail: -2481, disk-read-tokens-deducted: 0
 
 # Set the io tokens to a smaller value. Note that since the IO tokens can
 # increase up to 6*250 and 10*250, we expect the tokens to increase to 15, and
@@ -272,39 +272,39 @@ GrantCoordinator:
 set-tokens io-tokens=6 disk-write-tokens=10 tick-interval=1
 ----
 GrantCoordinator:
- io-avail: 15(15), disk-write-tokens-avail: 19, disk-read-tokens-deducted: 0
+ io-avail: 15(15), disk-write-tokens-avail: -2471, disk-read-tokens-deducted: 0
 
 # Subtract 10 tokens for elastic work. Note that disk-write-tokens-avail also decreases by 10.
 took-without-permission work=elastic v=10
 ----
 kv-elastic: tookWithoutPermission(10)
 GrantCoordinator:
- io-avail: 5(5), disk-write-tokens-avail: 9, disk-read-tokens-deducted: 0
+ io-avail: 5(5), disk-write-tokens-avail: -2481, disk-read-tokens-deducted: 0
 
 # Add 10 tokens.
 return-grant work=elastic v=10
 ----
 kv-elastic: returnGrant(10)
 GrantCoordinator:
- io-avail: 15(15), disk-write-tokens-avail: 19, disk-read-tokens-deducted: 0
+ io-avail: 15(15), disk-write-tokens-avail: -2471, disk-read-tokens-deducted: 0
 
 # If io-tokens is 10, we expect the tokens to accumulate upto 2500. So, we call
 # set-tokens 250 times, and ensure that the tokens are capped at 2500.
 set-tokens-loop io-tokens=10 disk-write-tokens=10 loop=250
 ----
 GrantCoordinator:
- io-avail: 2500(2500), disk-write-tokens-avail: 2500, disk-read-tokens-deducted: 0
+ io-avail: 2500(2500), disk-write-tokens-avail: 10, disk-read-tokens-deducted: 0
 
 # Setup waiting requests that want 1300 tokens each.
 set-has-waiting-requests work=elastic v=true
 ----
 GrantCoordinator:
- io-avail: 2500(2500), disk-write-tokens-avail: 2500, disk-read-tokens-deducted: 0
+ io-avail: 2500(2500), disk-write-tokens-avail: 10, disk-read-tokens-deducted: 0
 
 set-return-value-from-granted work=elastic v=1300
 ----
 GrantCoordinator:
- io-avail: 2500(2500), disk-write-tokens-avail: 2500, disk-read-tokens-deducted: 0
+ io-avail: 2500(2500), disk-write-tokens-avail: 10, disk-read-tokens-deducted: 0
 
 # Returning tokens triggers granting and 2 requests will be granted until the
 # tokens become <= 0.
@@ -312,34 +312,33 @@ return-grant work=regular v=1
 ----
 kv-regular: returnGrant(1)
 kv-elastic: granted in chain 0, and returning 1300
-kv-elastic: granted in chain 0, and returning 1300
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: -99, disk-read-tokens-deducted: 0
+ io-avail: 1201(1201), disk-write-tokens-avail: -1290, disk-read-tokens-deducted: 0
 
 # No tokens to give.
 try-get work=regular
 ----
-kv-regular: tryGet(1) returned false
+kv-regular: tryGet(1) returned true
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: -99, disk-read-tokens-deducted: 0
+ io-avail: 1200(1200), disk-write-tokens-avail: -1291, disk-read-tokens-deducted: 0
 
 set-has-waiting-requests work=elastic v=false
 ----
 GrantCoordinator:
- io-avail: -99(-99), disk-write-tokens-avail: -99, disk-read-tokens-deducted: 0
+ io-avail: 1200(1200), disk-write-tokens-avail: -1291, disk-read-tokens-deducted: 0
 
 # Negative tokens available should be respected on a subsequent call to set-tokens.
 set-tokens io-tokens=100 disk-write-tokens=0 tick-interval=1
 ----
 GrantCoordinator:
- io-avail: 1(1), disk-write-tokens-avail: -99, disk-read-tokens-deducted: 0
+ io-avail: 1300(1300), disk-write-tokens-avail: -1291, disk-read-tokens-deducted: 0
 
 # No elastic tokens to give.
 try-get work=elastic
 ----
 kv-elastic: tryGet(1) returned false
 GrantCoordinator:
- io-avail: 1(1), disk-write-tokens-avail: -99, disk-read-tokens-deducted: 0
+ io-avail: 1300(1300), disk-write-tokens-avail: -1291, disk-read-tokens-deducted: 0
 
 # Switch to an unloaded system which ticks at a 250ms rate. With this interval,
 # we expect the available tokens to be at most 50, 110 respectively. We see the
@@ -347,7 +346,7 @@ GrantCoordinator:
 set-tokens io-tokens=50 disk-write-tokens=110 tick-interval=250
 ----
 GrantCoordinator:
- io-avail: 50(50), disk-write-tokens-avail: 11, disk-read-tokens-deducted: 0
+ io-avail: 50(50), disk-write-tokens-avail: -1181, disk-read-tokens-deducted: 0
 
 #####################################################################
 # Test store grant coordinator with snapshot ingests
@@ -441,7 +440,7 @@ return-grant work=snapshot v=20
 ----
 kv-snapshot: returnGrant(20)
 GrantCoordinator:
- io-avail: 5(5), disk-write-tokens-avail: 20, disk-read-tokens-deducted: 0
+ io-avail: 5(5), disk-write-tokens-avail: 15, disk-read-tokens-deducted: 0
 
 #####################################################################
 # Test store grant coordinator disk error accounting

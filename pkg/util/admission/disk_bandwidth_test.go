@@ -54,7 +54,7 @@ func TestDiskBandwidthLimiter(t *testing.T) {
 					{writeByteTokens: elasticTokensUsed},  // elastic
 				}
 
-				dbl.computeElasticTokens(diskLoad, usedTokens)
+				dbl.computeElasticTokens(diskLoad, usedTokens, diskTokens{})
 				return dblToString()
 
 			default:
