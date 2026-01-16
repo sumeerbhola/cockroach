@@ -263,7 +263,7 @@ func (mc *MemRowContainer) AddRow(ctx context.Context, row rowenc.EncDatumRow) e
 func (mc *MemRowContainer) Sort(ctx context.Context) {
 	mc.invertSorting = false
 	var cancelChecker cancelchecker.CancelChecker
-	cancelChecker.Reset(ctx)
+	cancelChecker.Reset(ctx, true /* isGateway */)
 	mc.ctx = ctx
 	sort.Sort(mc, &cancelChecker)
 }

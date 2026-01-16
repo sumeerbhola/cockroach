@@ -105,7 +105,7 @@ func newMergeJoiner(
 func (m *mergeJoiner) Start(ctx context.Context) {
 	ctx = m.StartInternal(ctx, mergeJoinerProcName)
 	m.streamMerger.start(ctx)
-	m.cancelChecker.Reset(ctx, rowinfra.RowExecCancelCheckInterval)
+	m.cancelChecker.Reset(ctx, m.FlowCtx.Gateway, rowinfra.RowExecCancelCheckInterval)
 }
 
 // Next is part of the Processor interface.

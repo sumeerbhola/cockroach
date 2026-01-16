@@ -129,7 +129,7 @@ func (o *Optimizer) Init(ctx context.Context, evalCtx *eval.Context, catalog cat
 		f:        o.f,
 		stateMap: make(map[groupStateKey]*groupState),
 	}
-	o.cancelChecker.Reset(ctx)
+	o.cancelChecker.Reset(ctx, true /* isGateway */)
 	o.f.Init(ctx, evalCtx, catalog)
 	o.mem = o.f.Memo()
 	o.explorer.init(o)

@@ -4026,7 +4026,7 @@ func (ex *connExecutor) implicitTxn() bool {
 // initPlanner initializes a planner so it can be used for planning a
 // query in the context of this session.
 func (ex *connExecutor) initPlanner(ctx context.Context, p *planner) {
-	p.cancelChecker.Reset(ctx)
+	p.cancelChecker.Reset(ctx, true /* isGateway */)
 
 	ex.initEvalCtx(ctx, &p.extendedEvalCtx, p)
 	p.statsCollector = ex.statsCollector

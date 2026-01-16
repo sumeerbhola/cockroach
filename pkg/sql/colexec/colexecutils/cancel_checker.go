@@ -11,6 +11,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecop"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 )
@@ -25,6 +26,10 @@ type CancelChecker struct {
 	colexecop.InitHelper
 	colexecop.NonExplainable
 
+	// FlowCtx is the flow context for this operator. It provides access to
+	// flow-level information such as whether this is a gateway node.
+	FlowCtx *execinfra.FlowCtx
+
 	// Number of times check() has been called since last context cancellation
 	// check.
 	callsSinceLastCheck uint32
@@ -33,8 +38,11 @@ type CancelChecker struct {
 var _ colexecop.Operator = &CancelChecker{}
 
 // NewCancelChecker creates a new CancelChecker.
-func NewCancelChecker(op colexecop.Operator) *CancelChecker {
-	return &CancelChecker{OneInputNode: colexecop.NewOneInputNode(op)}
+func NewCancelChecker(op colexecop.Operator, flowCtx *execinfra.FlowCtx) *CancelChecker {
+	return &CancelChecker{
+		OneInputNode: colexecop.NewOneInputNode(op),
+		FlowCtx:      flowCtx,
+	}
 }
 
 // Init is part of colexecop.Operator interface.

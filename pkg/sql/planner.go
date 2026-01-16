@@ -984,7 +984,7 @@ func (p *planner) resetPlanner(
 	p.monitor = plannerMon
 	p.sessionMonitor = sessionMon
 
-	p.cancelChecker.Reset(ctx)
+	p.cancelChecker.Reset(ctx, true /* isGateway */)
 
 	utc := p.semaCtx.UnsupportedTypeChecker
 	p.semaCtx = tree.MakeSemaContext(p)

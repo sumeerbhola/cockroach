@@ -998,7 +998,7 @@ func NewColOperator(
 					return r, err
 				}
 			}
-			result.finishScanPlanning(scanOp, resultTypes, args.CloserRegistry)
+			result.finishScanPlanning(scanOp, resultTypes, args.CloserRegistry, flowCtx)
 
 		case core.JoinReader != nil:
 			if err := checkNumIn(inputs, 1); err != nil {
@@ -1030,7 +1030,7 @@ func NewColOperator(
 			if err != nil {
 				return r, err
 			}
-			result.finishScanPlanning(indexJoinOp, indexJoinOp.ResultTypes, args.CloserRegistry)
+			result.finishScanPlanning(indexJoinOp, indexJoinOp.ResultTypes, args.CloserRegistry, flowCtx)
 
 		case core.Filterer != nil:
 			if err := checkNumIn(inputs, 1); err != nil {
@@ -2121,7 +2121,10 @@ func (r opResult) finishBufferedWindowerArgs(
 }
 
 func (r opResult) finishScanPlanning(
-	op colfetcher.ScanOperator, resultTypes []*types.T, closerRegistry *colexecargs.CloserRegistry,
+	op colfetcher.ScanOperator,
+	resultTypes []*types.T,
+	closerRegistry *colexecargs.CloserRegistry,
+	flowCtx *execinfra.FlowCtx,
 ) {
 	r.Root = op
 	if buildutil.CrdbTestBuild {
@@ -2137,7 +2140,7 @@ func (r opResult) finishScanPlanning(
 	// are extremely fast. However, some of the long-running operators
 	// (for example, sorter) are still responsible for doing the
 	// cancellation check on their own while performing long operations.
-	r.Root = colexecutils.NewCancelChecker(r.Root)
+	r.Root = colexecutils.NewCancelChecker(r.Root, flowCtx)
 	r.ColumnTypes = resultTypes
 	closerRegistry.AddCloser(op)
 }

@@ -201,7 +201,7 @@ func newWindower(
 func (w *windower) Start(ctx context.Context) {
 	ctx = w.StartInternal(ctx, windowerProcName)
 	w.input.Start(ctx)
-	w.cancelChecker.Reset(ctx, rowinfra.RowExecCancelCheckInterval)
+	w.cancelChecker.Reset(ctx, w.FlowCtx.Gateway, rowinfra.RowExecCancelCheckInterval)
 	w.runningState = windowerAccumulating
 }
 

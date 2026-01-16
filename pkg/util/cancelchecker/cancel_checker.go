@@ -29,6 +29,10 @@ type CancelChecker struct {
 
 	// The number of Check() calls to skip the context cancellation check.
 	checkInterval uint32
+
+	// IsGateway indicates whether this checker is running on the gateway node
+	// for the current flow. This can be used for flow-level CPU accounting.
+	IsGateway bool
 }
 
 // The default interval of Check() calls to wait between checks for context
@@ -56,13 +60,15 @@ func (c *CancelChecker) Check() error {
 	return nil
 }
 
-// Reset resets this cancel checker with a fresh context. Parameter
-// checkInterval is optional and specifies an override for the default check
-// interval of 1024. Note that checkInterval is expected to be set to a power of
-// 2 by the caller, but Reset does no explicit checking of this.
-func (c *CancelChecker) Reset(ctx context.Context, checkInterval ...uint32) {
+// Reset resets this cancel checker with a fresh context. The isGateway
+// parameter indicates whether this checker is running on the gateway node.
+// The checkInterval parameter is optional and specifies an override for the
+// default check interval of 1024. Note that checkInterval is expected to be set
+// to a power of 2 by the caller, but Reset does no explicit checking of this.
+func (c *CancelChecker) Reset(ctx context.Context, isGateway bool, checkInterval ...uint32) {
 	*c = CancelChecker{
-		ctx: ctx,
+		ctx:       ctx,
+		IsGateway: isGateway,
 	}
 	if len(checkInterval) > 0 {
 		c.checkInterval = checkInterval[0]

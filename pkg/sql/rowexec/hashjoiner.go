@@ -176,7 +176,7 @@ func (h *hashJoiner) Start(ctx context.Context) {
 	ctx = h.StartInternal(ctx, hashJoinerProcName)
 	h.leftSource.Start(ctx)
 	h.rightSource.Start(ctx)
-	h.cancelChecker.Reset(ctx, rowinfra.RowExecCancelCheckInterval)
+	h.cancelChecker.Reset(ctx, h.FlowCtx.Gateway, rowinfra.RowExecCancelCheckInterval)
 	h.runningState = hjBuilding
 }
 

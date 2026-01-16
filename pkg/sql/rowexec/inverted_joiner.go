@@ -751,7 +751,7 @@ func (ij *invertedJoiner) Start(ctx context.Context) {
 		&ij.scanStatsListener, &ij.tenantConsumptionListener,
 	)
 	ij.input.Start(ctx)
-	ij.cancelChecker.Reset(ctx, 16 /* checkInterval */)
+	ij.cancelChecker.Reset(ctx, ij.FlowCtx.Gateway, 16 /* checkInterval */)
 	ij.runningState = ijReadingInput
 }
 

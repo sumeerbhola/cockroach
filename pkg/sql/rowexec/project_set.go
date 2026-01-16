@@ -142,7 +142,7 @@ func (ps *projectSetProcessor) MustBeStreaming() bool {
 func (ps *projectSetProcessor) Start(ctx context.Context) {
 	ctx = ps.StartInternal(ctx, projectSetProcName)
 	ps.input.Start(ctx)
-	ps.cancelChecker.Reset(ctx, rowinfra.RowExecCancelCheckInterval)
+	ps.cancelChecker.Reset(ctx, ps.FlowCtx.Gateway, rowinfra.RowExecCancelCheckInterval)
 }
 
 // nextInputRow returns the next row or metadata from ps.input. It also
