@@ -303,6 +303,7 @@ func (ls *Stores) updateBootstrapInfoLocked(bi *gossip.BootstrapInfo) error {
 
 // DiskStatsMonitor abstracts disk.Monitor for testing purposes.
 type DiskStatsMonitor interface {
+	DeviceID() disk.DeviceID
 	CumulativeStats() (disk.Stats, error)
 	Clone() *disk.Monitor
 	Close()

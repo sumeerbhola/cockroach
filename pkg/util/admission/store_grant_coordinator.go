@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/storage/disk"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -72,7 +73,19 @@ type StoreGrantCoordinators struct {
 // PebbleMetricsProvider provides the pebble.Metrics for all stores.
 type PebbleMetricsProvider interface {
 	GetPebbleMetrics() []StoreMetrics
+	GetDiskStats(buf *DiskMetricsBuf) error
 	Close()
+}
+
+type DiskMetricsBuf struct {
+	Raw     []disk.Stats
+	Stats   []StoreIDAndStats
+	Scratch []byte
+}
+
+type StoreIDAndStats struct {
+	StoreID roachpb.StoreID
+	Stats   DiskStats
 }
 
 // MetricsRegistryProvider provides the store metric.Registry for a given store.
@@ -100,6 +113,8 @@ func (sgc *StoreGrantCoordinators) SetPebbleMetricsProvider(
 	pebbleMetricsProvider := pmp
 	sgc.closeCh = make(chan struct{})
 	metrics := pebbleMetricsProvider.GetPebbleMetrics()
+	var diskBuf DiskMetricsBuf
+	diskStatsErr := pebbleMetricsProvider.GetDiskStats(&diskBuf)
 	for _, m := range metrics {
 		gc := sgc.initGrantCoordinator(m.StoreID, mrp.GetMetricsRegistry(m.StoreID))
 		// Defensive call to LoadAndStore even though Store ought to be sufficient
@@ -111,6 +126,16 @@ func (sgc *StoreGrantCoordinators) SetPebbleMetricsProvider(
 		}
 		gc.pebbleMetricsTick(startupCtx, m)
 		gc.allocateIOTokensTick(unloadedDuration.ticksInAdjustmentInterval())
+	}
+	if diskStatsErr != nil {
+		log.Dev.Warningf(startupCtx, "unable to get disk stats for token error adjustment: %v", diskStatsErr)
+	}
+	for _, ds := range diskBuf.Stats {
+		if gc, ok := sgc.gcMap.Load(ds.StoreID); ok {
+			gc.adjustDiskTokenError(ds.Stats)
+		} else {
+			panic(errors.AssertionFailedf("storeID %d found in disk stats but no store grant coordinator", ds.StoreID))
+		}
 	}
 	if sgc.disableTickerForTesting {
 		return
@@ -141,15 +166,20 @@ func (sgc *StoreGrantCoordinators) SetPebbleMetricsProvider(
 				// NB: We always do error calculation prior to making adjustments to
 				// make sure we account for errors prior to starting a new adjustment
 				// interval.
-				if t.shouldAdjustForError(remainingTicks, systemLoaded) {
-					metrics = pebbleMetricsProvider.GetPebbleMetrics()
-					for _, m := range metrics {
-						if gc, ok := sgc.gcMap.Load(m.StoreID); ok {
-							gc.adjustDiskTokenError(m)
-						} else {
-							log.Dev.Warningf(ctx,
-								"seeing metrics for unknown storeID %d", m.StoreID)
+				diskStatsLen := 0
+				if true /* t.shouldAdjustForError(remainingTicks, systemLoaded) */ {
+					err := pebbleMetricsProvider.GetDiskStats(&diskBuf)
+					if err == nil {
+						diskStatsLen = len(diskBuf.Stats)
+						for _, ds := range diskBuf.Stats {
+							if gc, ok := sgc.gcMap.Load(ds.StoreID); ok {
+								gc.adjustDiskTokenError(ds.Stats)
+							} else {
+								panic(errors.AssertionFailedf("storeID %d found in disk stats but no store grant coordinator", ds.StoreID))
+							}
 						}
+					} else {
+						log.Dev.Warningf(ctx, "unable to get disk stats for token error adjustment: %v", err)
 					}
 				}
 
@@ -159,6 +189,10 @@ func (sgc *StoreGrantCoordinators) SetPebbleMetricsProvider(
 					if len(metrics) != sgc.numStores {
 						log.Dev.Warningf(ctx,
 							"expected %d store metrics and found %d metrics", sgc.numStores, len(metrics))
+					}
+					if len(metrics) != diskStatsLen {
+						log.Dev.Warningf(ctx,
+							"expected %d disk stats and found %d stats", sgc.numStores, diskStatsLen)
 					}
 					for _, m := range metrics {
 						if gc, ok := sgc.gcMap.Load(m.StoreID); ok {
@@ -403,7 +437,7 @@ func (coord *storeGrantCoordinator) allocateIOTokensTick(remainingTicks int64) {
 // adjustDiskTokenError is used to account for errors in disk read and write
 // token estimation. Refer to the comment in adjustDiskTokenErrorLocked for more
 // details.
-func (coord *storeGrantCoordinator) adjustDiskTokenError(m StoreMetrics) {
+func (coord *storeGrantCoordinator) adjustDiskTokenError(m DiskStats) {
 	coord.granter.adjustDiskTokenError(m)
 }
 

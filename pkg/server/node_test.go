@@ -972,11 +972,13 @@ func TestGetTenantWeights(t *testing.T) {
 }
 
 type testMonitorManager struct {
-	monitors map[string]*testDiskStatsMonitor
+	monitors  map[string]*testDiskStatsMonitor
+	idCounter uint32
 }
 
 func (t *testMonitorManager) Monitor(path string) (kvserver.DiskStatsMonitor, error) {
-	monitor := &testDiskStatsMonitor{}
+	t.idCounter++
+	monitor := &testDiskStatsMonitor{deviceID: disk.DeviceID{Major: t.idCounter}}
 	t.monitors[path] = monitor
 	return monitor, nil
 }
@@ -990,8 +992,19 @@ func (t *testMonitorManager) injectStats(diskStats map[string]disk.Stats) {
 	}
 }
 
+func (t *testMonitorManager) CollectInstantaneous(
+	buf []disk.Stats, buf2 []byte,
+) ([]disk.Stats, []byte, error) {
+	buf = buf[:0]
+	for _, monitor := range t.monitors {
+		buf = append(buf, monitor.stats)
+	}
+	return buf, buf2, nil
+}
+
 type testDiskStatsMonitor struct {
-	stats disk.Stats
+	deviceID disk.DeviceID
+	stats    disk.Stats
 }
 
 func (t *testDiskStatsMonitor) CumulativeStats() (disk.Stats, error) {
@@ -1003,6 +1016,10 @@ func (t *testDiskStatsMonitor) Clone() *disk.Monitor {
 }
 
 func (t *testDiskStatsMonitor) Close() {
+}
+
+func (t *testDiskStatsMonitor) DeviceID() disk.DeviceID {
+	return t.deviceID
 }
 
 func TestDiskStatsMap(t *testing.T) {

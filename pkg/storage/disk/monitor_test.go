@@ -29,6 +29,12 @@ func (s *spyCollector) collect(
 	return len(disks), nil
 }
 
+func (s *spyCollector) collectInstantaneous(
+	disks []*monitoredDisk, now time.Time, recorder func(traceEvent), buf []byte,
+) (countCollected int, _ []byte, err error) {
+	return len(disks), buf, nil
+}
+
 func TestMonitorManager_monitorDisks(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -37,8 +43,8 @@ func TestMonitorManager_monitorDisks(t *testing.T) {
 	testDisk := &monitoredDisk{
 		manager: manager,
 		deviceID: DeviceID{
-			major: 0,
-			minor: 0,
+			Major: 0,
+			Minor: 0,
 		},
 	}
 	manager.mu.disks = []*monitoredDisk{testDisk}
@@ -132,8 +138,8 @@ func TestMonitor_Close(t *testing.T) {
 	testDisk := &monitoredDisk{
 		manager: manager,
 		deviceID: DeviceID{
-			major: 0,
-			minor: 0,
+			Major: 0,
+			Minor: 0,
 		},
 		refCount: 2,
 	}

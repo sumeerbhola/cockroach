@@ -1257,8 +1257,10 @@ func (n *Node) UpdateIOThreshold(id roachpb.StoreID, threshold *admissionpb.IOTh
 // diskStatsMap encapsulates all the logic for populating DiskStats for
 // admission.StoreMetrics.
 type diskStatsMap struct {
-	provisionedRate map[roachpb.StoreID]storageconfig.ProvisionedRate
-	diskMonitors    map[roachpb.StoreID]kvserver.DiskStatsMonitor
+	mm                monitorManagerInterface
+	provisionedRate   map[roachpb.StoreID]storageconfig.ProvisionedRate
+	diskMonitors      map[roachpb.StoreID]kvserver.DiskStatsMonitor
+	deviceIDToStoreID map[disk.DeviceID]roachpb.StoreID
 }
 
 func (dsm *diskStatsMap) tryPopulateAdmissionDiskStats(
@@ -1288,6 +1290,31 @@ func (dsm *diskStatsMap) tryPopulateAdmissionDiskStats(
 	return stats, nil
 }
 
+func (dsm *diskStatsMap) collectInstantaneous(buf *admission.DiskMetricsBuf) error {
+	raw, scratch, err := dsm.mm.CollectInstantaneous(buf.Raw, buf.Scratch)
+	if err != nil {
+		return err
+	}
+	buf.Raw = raw
+	buf.Scratch = scratch
+	buf.Stats = buf.Stats[:0]
+	for _, stat := range buf.Raw {
+		storeID, ok := dsm.deviceIDToStoreID[stat.DeviceID]
+		if !ok {
+			panic(errors.AssertionFailedf("unknown device ID in disk stats"))
+		}
+		buf.Stats = append(buf.Stats, admission.StoreIDAndStats{
+			StoreID: storeID,
+			Stats: admission.DiskStats{
+				BytesRead:            uint64(stat.BytesRead()),
+				BytesWritten:         uint64(stat.BytesWritten()),
+				ProvisionedBandwidth: 0,
+			},
+		})
+	}
+	return nil
+}
+
 func (dsm *diskStatsMap) empty() bool {
 	return len(dsm.provisionedRate) == 0
 }
@@ -1295,14 +1322,17 @@ func (dsm *diskStatsMap) empty() bool {
 // monitorManagerInterface abstracts disk.MonitorManager for testing purposes.
 type monitorManagerInterface interface {
 	Monitor(string) (kvserver.DiskStatsMonitor, error)
+	CollectInstantaneous(buf []disk.Stats, buf2 []byte) ([]disk.Stats, []byte, error)
 }
 
 func (dsm *diskStatsMap) initDiskStatsMap(
 	specs []base.StoreSpec, engines []kvstorage.Engines, diskManager monitorManagerInterface,
 ) error {
 	*dsm = diskStatsMap{
-		provisionedRate: make(map[roachpb.StoreID]storageconfig.ProvisionedRate),
-		diskMonitors:    make(map[roachpb.StoreID]kvserver.DiskStatsMonitor),
+		mm:                diskManager,
+		provisionedRate:   make(map[roachpb.StoreID]storageconfig.ProvisionedRate),
+		diskMonitors:      make(map[roachpb.StoreID]kvserver.DiskStatsMonitor),
+		deviceIDToStoreID: make(map[disk.DeviceID]roachpb.StoreID),
 	}
 	for i := range engines {
 		if specs[i].Path == "" || specs[i].InMemory {
@@ -1318,6 +1348,7 @@ func (dsm *diskStatsMap) initDiskStatsMap(
 		}
 		dsm.provisionedRate[id.StoreID] = specs[i].ProvisionedRate
 		dsm.diskMonitors[id.StoreID] = monitor
+		dsm.deviceIDToStoreID[monitor.DeviceID()] = id.StoreID
 	}
 	return nil
 }
@@ -1333,6 +1364,12 @@ type diskMonitorManager disk.MonitorManager
 // Monitor wraps disk.MonitorManager to satisfy monitorManagerInterface.
 func (mm *diskMonitorManager) Monitor(path string) (kvserver.DiskStatsMonitor, error) {
 	return (*disk.MonitorManager)(mm).Monitor(path)
+}
+
+func (mm *diskMonitorManager) CollectInstantaneous(
+	buf []disk.Stats, buf2 []byte,
+) ([]disk.Stats, []byte, error) {
+	return (*disk.MonitorManager)(mm).CollectInstantaneous(buf, buf2)
 }
 
 func (n *Node) registerEnginesForDiskStatsMap(
@@ -1388,6 +1425,10 @@ func (pmp *nodePebbleMetricsProvider) GetPebbleMetrics() []admission.StoreMetric
 		return nil
 	})
 	return metrics
+}
+
+func (pmp *nodePebbleMetricsProvider) GetDiskStats(buf *admission.DiskMetricsBuf) error {
+	return pmp.diskStatsMap.collectInstantaneous(buf)
 }
 
 // Close implements admission.PebbleMetricsProvider.
