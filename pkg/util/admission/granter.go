@@ -11,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
+	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -877,6 +878,10 @@ func (sg *kvStoreTokenGranter) addAvailableTokens(
 		sg.mu.availableIOTokens[admissionpb.ElasticWorkClass] =
 			min(sg.mu.availableIOTokens[admissionpb.ElasticWorkClass], sg.mu.availableIOTokens[admissionpb.RegularWorkClass])
 		// We also want to avoid very negative disk write tokens, so we reset them.
+		writeTokensPerSec := sg.mu.diskTokensAvailable.writeByteTokens / adjustmentInterval
+		if writeTokensPerSec < 0 {
+			log.Dev.Infof(context.Background(), "Potential overadmission=%s/s", humanizeutil.IBytes(-writeTokensPerSec))
+		}
 		sg.mu.diskTokensAvailable.writeByteTokens = max(sg.mu.diskTokensAvailable.writeByteTokens, 0)
 	}
 	var w admissionpb.WorkClass

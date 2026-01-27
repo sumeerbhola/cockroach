@@ -414,9 +414,9 @@ func runSingleNodeIndexBackfill(
 		); err != nil {
 			t.Fatal(err)
 		}
-		t.Status("setting kvadmission.store.elastic_disk_bandwidth_max_util = 1.0, to attempt to fully utilize the disk bandwidth")
+		t.Status("setting kvadmission.store.elastic_disk_bandwidth_max_util = 0.8, to attempt to fully utilize the disk bandwidth")
 		if _, err := db.ExecContext(
-			ctx, "SET CLUSTER SETTING kvadmission.store.elastic_disk_bandwidth_max_util = 1.0",
+			ctx, "SET CLUSTER SETTING kvadmission.store.elastic_disk_bandwidth_max_util = 0.8",
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -547,11 +547,11 @@ func runSingleNodeIndexBackfill(
 		metricsDone := make(chan struct{})
 		t.Go(func(context.Context, *logger.Logger) error {
 			defer close(metricsDone)
-			// Metrics queries: rate over 1 minute window, converted to MiB/s.
+			// Metrics queries: rate over 30s window, converted to MiB/s.
 			//
 			// TODO(sumeer): use these metrics for pass/fail criteria.
-			writeBWQuery := divQuery("rate(sys_host_disk_write_bytes[1m])", 1<<20)
-			readBWQuery := divQuery("rate(sys_host_disk_read_bytes[1m])", 1<<20)
+			writeBWQuery := divQuery("rate(sys_host_disk_write_bytes[30s])", 1<<20)
+			readBWQuery := divQuery("rate(sys_host_disk_read_bytes[30s])", 1<<20)
 
 			getMetricVal := func(query string) (float64, error) {
 				point, err := statCollector.CollectPoint(ctx, t.L(), timeutil.Now(), query)
@@ -565,8 +565,8 @@ func runSingleNodeIndexBackfill(
 				return 0, fmt.Errorf("no data for query %s", query)
 			}
 
-			t.L().Printf("=== INDEX BACKFILL METRICS COLLECTION STARTED (1m interval) ===")
-			ticker := time.NewTicker(1 * time.Minute)
+			t.L().Printf("=== INDEX BACKFILL METRICS COLLECTION STARTED (30s interval, every 10s) ===")
+			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 
 			iteration := 0
